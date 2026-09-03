@@ -103,9 +103,9 @@ describe('the MCP scratch directory', () => {
 	it('refuses the scratch directory when it is not configured', async () => {
 		await fs.writeFile(path.join(scratchDir, 'mcp-out.json'), JSON.stringify([{ id: 1 }]));
 
-		await expect(
-			run(`SELECT * FROM read_json_auto('${path.join(scratchDir, 'mcp-out.json')}')`),
-		).rejects.toThrow(/file system operations are disabled|Permission Error/);
+		await expect(run(`SELECT * FROM read_json_auto('${path.join(scratchDir, 'mcp-out.json')}')`)).rejects.toThrow(
+			/file system operations are disabled|Permission Error/,
+		);
 	});
 });
 
