@@ -19,9 +19,9 @@ MCP can write to a fixed path and the agent can read it back by its absolute pat
 
 ## Configuration
 
-| Variable | Required | Default | Description |
-| --- | --- | --- | --- |
-| `NAO_MCP_SCRATCH_DIR` | No | _unset_ | Absolute path to a directory DuckDB (`execute_sql`) is allowed to read from, in addition to the project folder and `/home` storage. When unset, behaviour is unchanged. |
+| Variable              | Required | Default | Description                                                                                                                                                             |
+| --------------------- | -------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NAO_MCP_SCRATCH_DIR` | No       | _unset_ | Absolute path to a directory DuckDB (`execute_sql`) is allowed to read from, in addition to the project folder and `/home` storage. When unset, behaviour is unchanged. |
 
 Notes:
 
@@ -35,17 +35,17 @@ Notes:
 
 1. Set the env var to a directory the backend can read:
 
-   ```bash
-   NAO_MCP_SCRATCH_DIR=/tmp/nao-mcp-scratch
-   ```
+    ```bash
+    NAO_MCP_SCRATCH_DIR=/tmp/nao-mcp-scratch
+    ```
 
 2. Have the MCP write its output there, e.g. `/tmp/nao-mcp-scratch/<uuid>.json`.
 
 3. In chat, the agent queries it by **absolute path**:
 
-   ```sql
-   SELECT * FROM read_json_auto('/tmp/nao-mcp-scratch/<uuid>.json')
-   ```
+    ```sql
+    SELECT * FROM read_json_auto('/tmp/nao-mcp-scratch/<uuid>.json')
+    ```
 
 ### Local development
 
@@ -63,7 +63,7 @@ sure the path is a shared, writable volume both the MCP and the backend can acce
 
 ```yaml
 environment:
-  NAO_MCP_SCRATCH_DIR: /mnt/mcp-scratch
+    NAO_MCP_SCRATCH_DIR: /mnt/mcp-scratch
 ```
 
 ## Cleanup / making files temporary
@@ -76,9 +76,9 @@ but they will sit in the scratch directory until something removes them. Pick on
   Note GCS lifecycle granularity is a minimum of 1 day.
 - **A periodic cleanup job:**
 
-  ```bash
-  find /path/to/scratch -type f -mmin +60 -delete
-  ```
+    ```bash
+    find /path/to/scratch -type f -mmin +60 -delete
+    ```
 
 - **`/tmp` on the host** is cleared on reboot and macOS purges old files after ~3 days —
   fine for local dev, too loose for production.
