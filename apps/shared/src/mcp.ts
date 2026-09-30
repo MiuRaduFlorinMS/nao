@@ -5,6 +5,8 @@ export interface McpServerConfig {
 	transport?: 'streamable-http' | 'sse' | 'http' | 'stdio';
 	url?: URL;
 	headers?: Record<string, string>;
+	/** Mints a fresh Google Cloud identity token per call (for IAM-protected Cloud Run servers). */
+	auth?: { type: 'gcp-id-token'; audience?: string };
 
 	// For stdio transport
 	command?: string;
@@ -62,6 +64,12 @@ export const mcpJsonSchema = z.object({
 				.optional()
 				.transform((val) => (val ? new URL(val) : undefined)),
 			headers: z.record(z.string(), z.string()).optional(),
+			auth: z
+				.object({
+					type: z.literal('gcp-id-token'),
+					audience: z.string().url().optional(),
+				})
+				.optional(),
 			command: z.string().optional(),
 			args: z.array(z.string()).optional(),
 			env: z.record(z.string(), z.string()).optional(),

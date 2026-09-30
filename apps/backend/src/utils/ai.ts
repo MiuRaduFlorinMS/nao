@@ -123,7 +123,7 @@ export function settleInterruptedToolParts(messages: UIMessage[]): UIMessage[] {
 		}
 		let changed = false;
 		const newParts = message.parts.map((part) => {
-			if (!isToolUIPart(part) || SETTLED_TOOL_STATES.has(part.state)) {
+			if (!isToolUIPart(part) || isToolPartSettled(part)) {
 				return part;
 			}
 			changed = true;
@@ -136,6 +136,12 @@ export function settleInterruptedToolParts(messages: UIMessage[]): UIMessage[] {
 		});
 		return changed ? { ...message, parts: newParts } : message;
 	});
+}
+
+/** A preliminary output is progress a still-running tool streamed, not a settled result. */
+function isToolPartSettled(part: Extract<UIMessagePart, { state: string }>): boolean {
+	const isPreliminary = 'preliminary' in part && part.preliminary === true;
+	return SETTLED_TOOL_STATES.has(part.state) && !isPreliminary;
 }
 
 export function findFirstNonSystemMessageIndex(messages: ModelMessage[]): number {
@@ -161,7 +167,7 @@ export function findLastCompactionPart(
 ): [CompactionPart, messageIdx: number] | [undefined, undefined] {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		for (const part of messages[i].parts) {
-			if (part.type === 'data-compaction') {
+			if (part.type === 'data-compaction' && (part.data.summary ?? '').trim() !== '') {
 				return [part.data, i];
 			}
 		}

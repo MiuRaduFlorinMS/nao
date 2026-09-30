@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+	balanceSlackStreamingCodeFence,
 	buildSlackCardNotificationText,
 	buildSlackTableBlocks,
 	chunkSlackText,
@@ -21,6 +22,31 @@ function tableChild(blocks: ReturnType<typeof createTextBlocks>) {
 		| undefined;
 }
 
+function textContents(blocks: ReturnType<typeof createTextBlocks>): string[] {
+	return blocks
+		.filter((block): block is Extract<(typeof blocks)[number], { type: 'text' }> => block.type === 'text')
+		.map((block) => block.content);
+}
+
+function reconstructChunkedText(chunks: string[]): string {
+	return chunks
+		.map((chunk, index) => {
+			let sourceChunk = chunk;
+			if (index > 0 && chunks[index - 1].endsWith('\n```') && sourceChunk.startsWith('```\n')) {
+				sourceChunk = sourceChunk.slice(4);
+			}
+			if (index < chunks.length - 1 && sourceChunk.endsWith('\n```') && chunks[index + 1].startsWith('```\n')) {
+				sourceChunk = sourceChunk.slice(0, -4);
+			}
+			return sourceChunk;
+		})
+		.join('');
+}
+
+function tripleBacktickCount(text: string): number {
+	return text.split('\n').filter((line) => line.trimStart().startsWith('```')).length;
+}
+
 describe('createTextBlocks', () => {
 	it('returns a single text block when there is no table', () => {
 		const blocks = createTextBlocks('Just a plain answer with **bold**.');
@@ -36,6 +62,90 @@ describe('createTextBlocks', () => {
 		expect(
 			blocks.every((block) => block.type !== 'text' || block.content.length <= SLACK_SECTION_TEXT_MAX_CHARS),
 		).toBe(true);
+	});
+
+	it('keeps a long fenced SQL block balanced across Slack sections', () => {
+		const sqlLines = Array.from(
+			{ length: 240 },
+			(_, index) => `    SELECT ${index} AS row_${index}, '${'value '.repeat(8)}' AS description;`,
+		);
+		const source = ['Before the query.', '', '```sql', ...sqlLines, '```', '', 'After the query.'].join('\n');
+		const chunks = textContents(createTextBlocks(source));
+		const codeChunks = chunks.filter((chunk) => chunk.includes('```'));
+
+		expect(chunks.length).toBeGreaterThanOrEqual(3);
+		expect(chunks.every((chunk) => chunk.length <= SLACK_SECTION_TEXT_MAX_CHARS)).toBe(true);
+		expect(codeChunks.every((chunk) => tripleBacktickCount(chunk) % 2 === 0)).toBe(true);
+		expect(codeChunks[0]).toContain('```sql');
+		expect(codeChunks.slice(1).every((chunk) => chunk.startsWith('```\n'))).toBe(true);
+		expect(codeChunks.slice(1).every((chunk) => !chunk.startsWith('```sql'))).toBe(true);
+		expect(codeChunks.slice(1, -1).every((chunk) => chunk.endsWith('\n```'))).toBe(true);
+		expect(codeChunks.at(-1)).toContain(`${sqlLines.at(-1)}\n\`\`\``);
+		expect(reconstructChunkedText(chunks)).toBe(source);
+	});
+
+	it('balances multiple fenced blocks without changing their content', () => {
+		const firstCode = Array.from({ length: 100 }, (_, index) => `    first_${index} = ${index}`).join('\n');
+		const secondCode = Array.from({ length: 100 }, (_, index) => `  second_${index} = ${index}`).join('\n');
+		const source = [
+			'First block:',
+			'```python',
+			firstCode,
+			'```',
+			'Between blocks.',
+			'```sql',
+			secondCode,
+			'```',
+			'Done.',
+		].join('\n');
+		const chunks = chunkSlackText(source, 500);
+
+		expect(chunks.every((chunk) => chunk.length <= 500)).toBe(true);
+		expect(
+			chunks.filter((chunk) => chunk.includes('```')).every((chunk) => tripleBacktickCount(chunk) % 2 === 0),
+		).toBe(true);
+		expect(reconstructChunkedText(chunks)).toBe(source);
+		expect(reconstructChunkedText(chunks)).toContain('Between blocks.');
+	});
+
+	it('temporarily closes an incomplete streaming fence without changing completed text', () => {
+		const incomplete = 'Before\n```sql\nSELECT **value**';
+		const updated = `${incomplete}\nFROM source`;
+		const completed = `${incomplete}\n\`\`\``;
+		const incompleteBlocks = textContents(createTextBlocks(incomplete, { balanceIncompleteCodeFence: true }));
+		const updatedBlocks = textContents(createTextBlocks(updated, { balanceIncompleteCodeFence: true }));
+		const completedBlocks = textContents(createTextBlocks(completed, { balanceIncompleteCodeFence: true }));
+
+		expect(incomplete).toBe('Before\n```sql\nSELECT **value**');
+		expect(incompleteBlocks).toEqual([`${incomplete}\n\`\`\``]);
+		expect(updatedBlocks).toEqual([`${updated}\n\`\`\``]);
+		expect(tripleBacktickCount(incompleteBlocks[0])).toBe(2);
+		expect(completedBlocks).toEqual([completed]);
+		expect(tripleBacktickCount(completedBlocks[0])).toBe(2);
+		expect(balanceSlackStreamingCodeFence(completed)).toBe(completed);
+	});
+
+	it('balances an incomplete final fence only for a stopped stream', () => {
+		const incomplete = 'Before\n```sql\nSELECT **value**';
+		const renderFinal = (stopRequested: boolean) =>
+			textContents(createTextBlocks(incomplete, { balanceIncompleteCodeFence: stopRequested }));
+
+		expect(renderFinal(false)).toEqual(['Before\n```sql\nSELECT *value*']);
+		expect(renderFinal(true)).toEqual([`${incomplete}\n\`\`\``]);
+		expect(incomplete).toBe('Before\n```sql\nSELECT **value**');
+	});
+
+	it('keeps long incomplete streaming code balanced within Slack limits', () => {
+		const incomplete = `\`\`\`sql\n${Array.from(
+			{ length: 200 },
+			(_, index) => `    SELECT ${index} AS value;`,
+		).join('\n')}`;
+		const chunks = textContents(createTextBlocks(incomplete, { balanceIncompleteCodeFence: true }));
+
+		expect(chunks.length).toBeGreaterThan(1);
+		expect(chunks.every((chunk) => chunk.length <= SLACK_SECTION_TEXT_MAX_CHARS)).toBe(true);
+		expect(chunks.every((chunk) => tripleBacktickCount(chunk) % 2 === 0)).toBe(true);
+		expect(chunks.at(-1)?.endsWith('\n```')).toBe(true);
 	});
 
 	it('splits a markdown table into a Table element with text around it', () => {
@@ -85,9 +195,31 @@ describe('createTextBlocks', () => {
 		const text = ['| A | B | C |', '|---|---|---|', '| 1 | 2 |', '| 1 | 2 | 3 | 4 |'].join('\n');
 		const table = tableChild(createTextBlocks(text));
 		expect(table?.rows).toEqual([
-			['1', '2', ''],
+			['1', '2', '-'],
 			['1', '2', '3'],
 		]);
+	});
+
+	it('never sends an empty cell to Slack', () => {
+		const text = ['| region | count | note |', '|---|---|---|', '| EU | 3 |', '| US |  | x |', '| | | |'].join(
+			'\n',
+		);
+		const table = tableChild(createTextBlocks(text));
+		expect(table?.rows).toEqual([
+			['EU', '3', '-'],
+			['US', '-', 'x'],
+			['-', '-', '-'],
+		]);
+	});
+
+	it('fills empty header cells', () => {
+		const table = tableChild(createTextBlocks(['| name |  |', '|---|---|', '| a | b |'].join('\n')));
+		expect(table?.headers).toEqual(['name', '-']);
+	});
+
+	it('fills the missing cell of a row that is still streaming', () => {
+		const table = tableChild(createTextBlocks(['| id | name |', '|---|---|', '| 1'].join('\n')));
+		expect(table?.rows).toEqual([['1', '-']]);
 	});
 
 	it('does not treat pipe tables inside fenced code blocks as tables', () => {
@@ -557,6 +689,66 @@ describe('Slack payload safety', () => {
 		expect(chunks.every((chunk) => chunk.length > 0)).toBe(true);
 	});
 
+	it('keeps the established prose splitting behavior', () => {
+		expect(chunkSlackText('alpha beta gamma delta', 12)).toEqual(['alpha beta', 'gamma delta']);
+	});
+
+	it('reserves room for continuation fences near the chunk limit', () => {
+		const source = `\`\`\`sql\n${'x'.repeat(100)}\n\`\`\``;
+		const chunks = chunkSlackText(source, 30);
+
+		expect(chunks.length).toBeGreaterThanOrEqual(4);
+		expect(chunks.every((chunk) => chunk.length <= 30)).toBe(true);
+		expect(chunks.every((chunk) => tripleBacktickCount(chunk) % 2 === 0)).toBe(true);
+		expect(chunks.slice(1, -1).every((chunk) => chunk.startsWith('```\n') && chunk.endsWith('\n```'))).toBe(true);
+		expect(reconstructChunkedText(chunks)).toBe(source);
+	});
+
+	it('preserves indentation after fenced code splits', () => {
+		const codeLines = Array.from({ length: 30 }, (_, index) => `    indented_${index} = ${index}`);
+		const source = ['```python', ...codeLines, '```'].join('\n');
+		const chunks = chunkSlackText(source, 100);
+
+		expect(chunks.length).toBeGreaterThan(2);
+		expect(chunks.slice(1).some((chunk) => chunk.startsWith('```\n    indented_'))).toBe(true);
+		expect(reconstructChunkedText(chunks)).toBe(source);
+	});
+
+	it.each([
+		{ maxChars: 40, prefixLength: 18, indentationLength: 20 },
+		{ maxChars: SLACK_SECTION_TEXT_MAX_CHARS, prefixLength: 1448, indentationLength: 1449 },
+	])('keeps an opening fence marker intact at a $maxChars-character boundary', (example) => {
+		const openingMarker = `${'\t'.repeat(example.indentationLength)}\`\`\`sql`;
+		const source = ['p'.repeat(example.prefixLength), openingMarker, 'SELECT 1;', '```', 'Done.'].join('\n');
+		const chunks = chunkSlackText(source, example.maxChars);
+
+		expect(chunks.every((chunk) => chunk.length <= example.maxChars)).toBe(true);
+		expect(chunks.some((chunk) => chunk.includes(openingMarker))).toBe(true);
+		expect(
+			chunks.filter((chunk) => chunk.includes('```')).every((chunk) => tripleBacktickCount(chunk) % 2 === 0),
+		).toBe(true);
+		expect(reconstructChunkedText(chunks)).toBe(source);
+	});
+
+	it('keeps an indented closing fence marker line intact when it fits the next chunk', () => {
+		const closingMarker = `${'\t'.repeat(19)}\`\`\``;
+		const source = ['```sql', 'x', closingMarker, 'Done.'].join('\n');
+		const chunks = chunkSlackText(source, 30);
+
+		expect(chunks.every((chunk) => chunk.length <= 30)).toBe(true);
+		expect(chunks.some((chunk) => chunk.includes(closingMarker))).toBe(true);
+		expect(
+			chunks.filter((chunk) => chunk.includes('```')).every((chunk) => tripleBacktickCount(chunk) % 2 === 0),
+		).toBe(true);
+		expect(reconstructChunkedText(chunks)).toBe(source);
+	});
+
+	it('rejects a chunk size too small for a complete fence marker line', () => {
+		expect(() => chunkSlackText('```sql\nx\n```', 6)).toThrow(
+			'Slack text chunk size is too small for a code fence marker line.',
+		);
+	});
+
 	it('keeps replies below the Slack message limit in one chunk', () => {
 		const text = 'x'.repeat(SLACK_SECTION_TEXT_MAX_CHARS - 1);
 		const chunks = chunkSlackText(text, SLACK_SECTION_TEXT_MAX_CHARS);
@@ -584,8 +776,8 @@ describe('buildSlackTableBlocks', () => {
 		const blocks = buildSlackTableBlocks(text) as AnyBlock[] | null;
 		expect(blocks).not.toBeNull();
 
-		const tableBlock = blocks!.find((block) => block.type === 'table') as
-			| { type: 'table'; rows: { type: string; text: string }[][] }
+		const tableBlock = blocks!.find((block) => block.type === 'data_table') as
+			| { type: 'data_table'; rows: { type: string; text: string }[][] }
 			| undefined;
 		expect(tableBlock).toBeDefined();
 		expect(tableBlock!.rows).toEqual([
@@ -604,12 +796,23 @@ describe('buildSlackTableBlocks', () => {
 		]);
 	});
 
+	it('renders every table cell with non-empty text, as Slack requires', () => {
+		const text = ['| region | count | note |', '|---|---|---|', '| EU | 3 |', '| US |  | x |'].join('\n');
+		const blocks = buildSlackTableBlocks(text) as AnyBlock[] | null;
+		const tableBlock = blocks?.find((block) => block.type === 'data_table') as
+			| { rows: { type: string; text: string }[][] }
+			| undefined;
+		const cells = tableBlock?.rows.flat() ?? [];
+		expect(cells.length).toBe(9);
+		expect(cells.every((cell) => cell.text.trim().length > 0)).toBe(true);
+	});
+
 	it("keeps the rendered table block within Slack's 10,000-character budget", () => {
 		const bigRows = Array.from({ length: 200 }, (_, i) => `| item ${i} | ${'x'.repeat(120)} |`);
 		const text = ['| Name | Description |', '|------|-------------|', ...bigRows].join('\n');
 
 		const blocks = buildSlackTableBlocks(text) as AnyBlock[] | null;
-		const tableBlock = blocks?.find((block) => block.type === 'table') as
+		const tableBlock = blocks?.find((block) => block.type === 'data_table') as
 			| { rows: { type: string; text: string }[][] }
 			| undefined;
 		expect(tableBlock).toBeDefined();
@@ -627,7 +830,7 @@ describe('buildSlackTableBlocks', () => {
 		const text = [...firstTable, '', '| Second | Description |', '|---|---|', ...secondRows].join('\n');
 
 		const blocks = buildSlackTableBlocks(text) as AnyBlock[] | null;
-		const tableBlocks = blocks?.filter((block) => block.type === 'table') ?? [];
+		const tableBlocks = blocks?.filter((block) => block.type === 'data_table') ?? [];
 		const sectionBlocks = (blocks?.filter((block) => block.type === 'section') ?? []) as {
 			type: 'section';
 			text?: { text: string };

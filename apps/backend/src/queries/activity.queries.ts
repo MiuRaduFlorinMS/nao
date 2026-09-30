@@ -14,6 +14,7 @@ export const storyRefreshJobUniqueKey = (storyId: string): string => `story-refr
 
 const ACTIVITY_RUN_STALE_MS = 30 * 60 * 1_000;
 const ACTIVITY_RUN_STALE_MESSAGE = 'Activity did not finish before the timeout.';
+const CONTEXT_PULL_HISTORY_LIMIT = 100;
 
 export interface CreateActivityInput {
 	projectId: string;
@@ -26,6 +27,16 @@ export interface CreateActivityInput {
 	sharedStoryId?: string | null;
 	sharedChatId?: string | null;
 	payload?: Record<string, unknown> | null;
+}
+
+export interface ContextPullActivityRow {
+	id: string;
+	status: DBActivity['status'];
+	payload: Record<string, unknown> | null;
+	errorMessage: string | null;
+	startedAt: Date;
+	completedAt: Date | null;
+	actorName: string | null;
 }
 
 export const createActivity = async (input: CreateActivityInput): Promise<DBActivity> => {
@@ -43,6 +54,43 @@ export const createActivity = async (input: CreateActivityInput): Promise<DBActi
 	};
 	const [created] = await db.insert(s.activity).values(values).returning().execute();
 	return created;
+};
+
+export const startContextPullActivity = async (projectId: string, userId: string): Promise<DBActivity> => {
+	return createActivity({
+		projectId,
+		userId,
+		type: 'context.pulled',
+		trigger: 'manual',
+		status: 'running',
+	});
+};
+
+export const listContextPullActivities = async (projectId: string): Promise<ContextPullActivityRow[]> => {
+	await failStaleActivities();
+
+	return db
+		.select({
+			id: s.activity.id,
+			status: s.activity.status,
+			payload: s.activity.payload,
+			errorMessage: s.activity.errorMessage,
+			startedAt: s.activity.startedAt,
+			completedAt: s.activity.completedAt,
+			actorName: s.user.name,
+		})
+		.from(s.activity)
+		.leftJoin(s.user, eq(s.user.id, s.activity.userId))
+		.where(
+			and(
+				eq(s.activity.projectId, projectId),
+				eq(s.activity.type, 'context.pulled'),
+				eq(s.activity.trigger, 'manual'),
+			),
+		)
+		.orderBy(desc(s.activity.startedAt))
+		.limit(CONTEXT_PULL_HISTORY_LIMIT)
+		.execute();
 };
 
 /**
@@ -323,6 +371,12 @@ function visibleToUser(projectId: string, userId: string) {
 			INNER JOIN ${s.sharedStoryAccess} ssa ON ssa.shared_story_id = ss.id
 			WHERE ss.story_id = ${s.activity.storyId} AND ssa.user_id = ${userId}
 		)`,
+		sql`EXISTS (
+			SELECT 1 FROM ${s.sharedStory} ss
+			INNER JOIN ${s.sharedStoryGroupAccess} ssga ON ssga.shared_story_id = ss.id
+			INNER JOIN ${s.userGroupMember} ugm ON ugm.group_id = ssga.group_id
+			WHERE ss.story_id = ${s.activity.storyId} AND ugm.user_id = ${userId}
+		)`,
 	);
 
 	const storyShareIncludesUser = or(
@@ -336,6 +390,12 @@ function visibleToUser(projectId: string, userId: string) {
 			SELECT 1 FROM ${s.sharedStoryAccess} ssa
 			WHERE ssa.shared_story_id = ${s.activity.sharedStoryId}
 				AND ssa.user_id = ${userId}
+		)`,
+		sql`EXISTS (
+			SELECT 1 FROM ${s.sharedStoryGroupAccess} ssga
+			INNER JOIN ${s.userGroupMember} ugm ON ugm.group_id = ssga.group_id
+			WHERE ssga.shared_story_id = ${s.activity.sharedStoryId}
+				AND ugm.user_id = ${userId}
 		)`,
 	);
 
