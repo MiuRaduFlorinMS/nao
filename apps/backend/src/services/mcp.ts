@@ -8,6 +8,7 @@ import type { ErrorObject, ValidateFunction } from 'ajv';
 import Ajv2020 from 'ajv/dist/2020';
 import { existsSync, watch } from 'fs';
 import { mkdir, readdir, readFile, unlink, writeFile } from 'fs/promises';
+import { GoogleAuth, type IdTokenClient } from 'google-auth-library';
 import { createRuntime, type Runtime, ServerDefinition } from 'mcporter';
 import { isAbsolute, join, relative, resolve, sep } from 'path';
 
@@ -121,6 +122,9 @@ export class McpService {
 	private _discovered: Record<string, McpToolDefinition[]> = {};
 	/** Cached per-server flag for whether the server is OAuth-protected. */
 	private _oauth: Record<string, boolean> = {};
+	private _googleAuth: GoogleAuth | null = null;
+	/** ID token clients keyed by audience, reused so ADC discovery runs once per audience. */
+	private _idTokenClients = new Map<string, Promise<IdTokenClient>>();
 	/** Compiled argument validators keyed by `server/tool`, rebuilt when a server is rediscovered. */
 	private _validators = new Map<string, ValidateFunction>();
 	private _ajv: Ajv2020 | null = null;
@@ -381,6 +385,9 @@ export class McpService {
 		await this._validateArgs(server, tool, args);
 
 		try {
+			if (config.auth?.type === 'gcp-id-token') {
+				return await this._callToolGcpAuth({ server, tool, args, config });
+			}
 			if (await this._ensureOAuthFlag(server, config)) {
 				return await this._callToolOAuth({ projectId, userId, server, tool, args, config });
 			}
@@ -429,6 +436,36 @@ export class McpService {
 			}
 			throw error;
 		}
+	}
+
+	private async _callToolGcpAuth(opts: {
+		server: string;
+		tool: string;
+		args: Record<string, unknown>;
+		config: McpServerConfig;
+	}): Promise<unknown> {
+		const { tool, args, config } = opts;
+		const token = await this._fetchGcpIdToken(this._gcpAudience(config));
+		return this._withHttpClient(config, this._httpHeaders(config, token), (client) =>
+			client.callTool({ name: tool, arguments: args }),
+		);
+	}
+
+	/** Resolves the audience for a gcp-id-token server: an explicit override, else the server URL. */
+	private _gcpAudience(config: McpServerConfig): string {
+		return config.auth?.audience ?? config.url!.toString();
+	}
+
+	/** Mints a fresh Google-signed identity token for the audience via Application Default Credentials. */
+	private async _fetchGcpIdToken(audience: string): Promise<string> {
+		let clientPromise = this._idTokenClients.get(audience);
+		if (!clientPromise) {
+			this._googleAuth ??= new GoogleAuth();
+			clientPromise = this._googleAuth.getIdTokenClient(audience);
+			this._idTokenClients.set(audience, clientPromise);
+		}
+		const client = await clientPromise;
+		return client.idTokenProvider.fetchIdToken(audience);
 	}
 
 	/**
@@ -656,6 +693,17 @@ export class McpService {
 		config: McpServerConfig,
 		discoveryUserId?: string,
 	): Promise<McpToolDefinition[]> {
+		if (config.auth?.type === 'gcp-id-token') {
+			const token = await this._fetchGcpIdToken(this._gcpAudience(config));
+			return this._withHttpClient(config, this._httpHeaders(config, token), async (client) => {
+				const result = await client.listTools();
+				return result.tools.map((tool) => ({
+					name: tool.name,
+					description: tool.description,
+					inputSchema: tool.inputSchema,
+				}));
+			});
+		}
 		if (await this._ensureOAuthFlag(name, config)) {
 			const url = config.url!.toString();
 			const token = await this._discoveryToken(name, url, discoveryUserId);
@@ -697,7 +745,12 @@ export class McpService {
 		if (this._oauth[name] !== undefined) {
 			return this._oauth[name];
 		}
-		if (this._transportOf(config) !== 'http' || !config.url || this._hasStaticAuth(config)) {
+		if (
+			this._transportOf(config) !== 'http' ||
+			!config.url ||
+			this._hasStaticAuth(config) ||
+			config.auth?.type === 'gcp-id-token'
+		) {
 			this._oauth[name] = false;
 			return false;
 		}
