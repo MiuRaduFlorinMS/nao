@@ -1,11 +1,16 @@
+import type { UserGroupFeature, WarehouseRowSecurity } from '@nao/shared';
+import type { UserRulesGroupAccess } from '@nao/shared/rules-template';
 import type { displayChart, displayMap } from '@nao/shared/tools';
 import type { LlmSelectedModel, SemanticLayerMode } from '@nao/shared/types';
 
+import type { WarehouseTableAccess } from '../services/context-access';
+import type { ResolvedDocsContextAccess } from '../services/user-group-context-access.service';
 import { AgentSettings } from './agent-settings';
 
 export interface QueryResult {
 	columns: string[];
 	data: Record<string, unknown>[];
+	compiledBySemanticLayer?: boolean;
 }
 
 export interface GeneratedArtifacts {
@@ -29,6 +34,11 @@ export interface ToolContext {
 	 */
 	semanticLayerMode?: SemanticLayerMode | null;
 	envVars: Record<string, string>;
+	warehouseTableAccess: WarehouseTableAccess;
+	warehouseRowSecurity: WarehouseRowSecurity;
+	docsContextAccess: ResolvedDocsContextAccess;
+	userGroupFeatures: UserGroupFeature[];
+	userRulesGroupAccess: UserRulesGroupAccess;
 	/**
 	 * Database federation access token. Populated by the EE Microsoft/Azure AD
 	 * integration when the user signs in via Microsoft; always null in the
@@ -50,4 +60,7 @@ export interface ToolContext {
 	adminMode?: boolean;
 }
 
-export type McpToolContext = Omit<ToolContext, 'chatId'> & { chatId: null };
+export type McpToolContext = Omit<ToolContext, 'chatId'> & {
+	chatId: null;
+	storyCreationEnabled?: boolean;
+};

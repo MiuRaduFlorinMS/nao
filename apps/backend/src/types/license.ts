@@ -7,9 +7,11 @@
  */
 export const LICENSE_FEATURES = {
 	excludeColumns: 'exclude-columns',
+	rowLevelSecurity: 'row-level-security',
 	sso: 'sso',
 	whiteLabel: 'white-label',
 	userBudget: 'user-budget',
+	userGroups: 'user-groups',
 	multiProject: 'multi-project',
 } as const;
 
