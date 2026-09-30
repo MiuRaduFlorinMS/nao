@@ -377,12 +377,14 @@ function clampNumber(value: number, min: number, max: number): number {
 const MIN_THINKING_BUDGET = 1024;
 /** Output tokens reserved for the visible answer when fitting a thinking budget under a limit. */
 const THINKING_OUTPUT_RESERVE = 1024;
+/** Gemini counts thinking against the same output envelope, so reserve a larger slice for the answer. */
+const GEMINI_OUTPUT_RESERVE = 4_000;
 
-function fitBudget(budget: number, limit: number | undefined): number | undefined {
+function fitBudget(budget: number, limit: number | undefined, reserve = THINKING_OUTPUT_RESERVE): number | undefined {
 	if (limit === undefined) {
 		return budget;
 	}
-	const fitted = Math.min(budget, limit - THINKING_OUTPUT_RESERVE);
+	const fitted = Math.min(budget, limit - reserve);
 	return fitted >= MIN_THINKING_BUDGET ? fitted : undefined;
 }
 
@@ -417,6 +419,21 @@ export function fitThinkingBudget(
 		delete rest.reasoningConfig;
 		fitted.bedrock =
 			budget === undefined ? rest : { ...rest, reasoningConfig: { type: 'enabled', budgetTokens: budget } };
+	}
+
+	for (const key of ['google', 'vertex'] as const) {
+		const options = fitted[key];
+		const thinkingConfig = options?.thinkingConfig;
+		if (!options || typeof thinkingConfig?.thinkingBudget !== 'number') {
+			continue;
+		}
+		const budget = fitBudget(thinkingConfig.thinkingBudget, maxOutputTokens, GEMINI_OUTPUT_RESERVE);
+		const restThinking = { ...thinkingConfig };
+		delete restThinking.thinkingBudget;
+		fitted[key] =
+			budget === undefined
+				? { ...options, thinkingConfig: restThinking }
+				: { ...options, thinkingConfig: { ...thinkingConfig, thinkingBudget: budget } };
 	}
 
 	return fitted;
