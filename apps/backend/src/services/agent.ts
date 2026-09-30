@@ -2,7 +2,7 @@ import type { CustomBoundarySet } from '@nao/shared';
 import { fileExtension } from '@nao/shared/attachments';
 import { markSupersededExecuteSqlParts } from '@nao/shared/execute-sql-parts';
 import { story } from '@nao/shared/tools';
-import type { LlmProvider, LlmSelectedModel } from '@nao/shared/types';
+import { type LlmProvider, type LlmSelectedModel, providerKind } from '@nao/shared/types';
 import {
 	convertToModelMessages,
 	createUIMessageStream,
@@ -401,6 +401,8 @@ export class AgentService {
 }
 
 export const MAX_OUTPUT_TOKENS = 16_000;
+/** Gemini counts thinking against the output envelope, so it needs more room than the default. */
+const GEMINI_MAX_OUTPUT_TOKENS = 30_000;
 
 class AgentManager {
 	private readonly _agent: ToolLoopAgent<never, AgentTools, never>;
@@ -460,7 +462,12 @@ class AgentManager {
 	}
 
 	private get _maxOutputTokens(): number {
-		return this._modelConfig.callSettings?.maxOutputTokens ?? MAX_OUTPUT_TOKENS;
+		return this._modelConfig.callSettings?.maxOutputTokens ?? this._defaultMaxOutputTokens;
+	}
+
+	private get _defaultMaxOutputTokens(): number {
+		const kind = providerKind(this._modelSelection.provider);
+		return kind === 'google' || kind === 'vertex' ? GEMINI_MAX_OUTPUT_TOKENS : MAX_OUTPUT_TOKENS;
 	}
 
 	private async _prepareStep(messages: ModelMessage[]): Promise<{ messages: ModelMessage[] }> {
