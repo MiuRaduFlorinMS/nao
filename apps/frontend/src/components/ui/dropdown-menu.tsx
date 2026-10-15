@@ -73,13 +73,13 @@ function DropdownMenuCheckboxItem({
 		<DropdownMenuPrimitive.CheckboxItem
 			data-slot='dropdown-menu-checkbox-item'
 			className={cn(
-				"focus:bg-accent focus:text-accent-foreground relative flex w-full items-center gap-2 rounded-sm py-1 pr-2 pl-8 text-sm outline-hidden cursor-pointer select-none not-last:mb-[2px] data-disabled:pointer-events-none data-disabled:opacity-50 *:[span]:last:flex *:[span]:last:items-center *:[span]:last:gap-2 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 [&_svg:not([class*='text-'])]:text-muted-foreground",
+				"focus:bg-accent focus:text-accent-foreground relative flex w-full items-center gap-2 rounded-sm py-1 pr-8 pl-2 text-sm outline-hidden cursor-pointer select-none not-last:mb-[2px] data-disabled:pointer-events-none data-disabled:opacity-50 *:[span]:last:flex *:[span]:last:items-center *:[span]:last:gap-2 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 [&_svg:not([class*='text-'])]:text-muted-foreground",
 				className,
 			)}
 			checked={checked}
 			{...props}
 		>
-			<span className='pointer-events-none absolute left-2 flex size-3.5 items-center justify-center'>
+			<span className='pointer-events-none absolute right-2 flex size-3.5 items-center justify-center'>
 				<DropdownMenuPrimitive.ItemIndicator>
 					<CheckIcon className='size-4' />
 				</DropdownMenuPrimitive.ItemIndicator>
@@ -96,20 +96,25 @@ function DropdownMenuRadioGroup({ ...props }: React.ComponentProps<typeof Dropdo
 function DropdownMenuRadioItem({
 	className,
 	children,
+	indicator = 'dot',
 	...props
-}: React.ComponentProps<typeof DropdownMenuPrimitive.RadioItem>) {
+}: React.ComponentProps<typeof DropdownMenuPrimitive.RadioItem> & { indicator?: 'dot' | 'check' }) {
 	return (
 		<DropdownMenuPrimitive.RadioItem
 			data-slot='dropdown-menu-radio-item'
 			className={cn(
-				"focus:bg-accent focus:text-accent-foreground relative flex w-full items-center gap-2 rounded-sm py-1 pr-2 pl-8 text-sm outline-hidden cursor-pointer select-none not-last:mb-[2px] data-disabled:pointer-events-none data-disabled:opacity-50 *:[span]:last:flex *:[span]:last:items-center *:[span]:last:gap-2 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 [&_svg:not([class*='text-'])]:text-muted-foreground",
+				"focus:bg-accent focus:text-accent-foreground relative flex w-full items-center gap-2 rounded-sm py-1 pr-8 pl-2 text-sm outline-hidden cursor-pointer select-none not-last:mb-[2px] data-disabled:pointer-events-none data-disabled:opacity-50 *:[span]:last:flex *:[span]:last:items-center *:[span]:last:gap-2 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 [&_svg:not([class*='text-'])]:text-muted-foreground",
 				className,
 			)}
 			{...props}
 		>
-			<span className='pointer-events-none absolute left-2 flex size-3.5 items-center justify-center'>
+			<span className='pointer-events-none absolute right-2 flex size-3.5 items-center justify-center'>
 				<DropdownMenuPrimitive.ItemIndicator>
-					<CircleIcon className='size-2 fill-current' />
+					{indicator === 'check' ? (
+						<CheckIcon className='size-4' />
+					) : (
+						<CircleIcon className='size-2 fill-current' />
+					)}
 				</DropdownMenuPrimitive.ItemIndicator>
 			</span>
 			{children}

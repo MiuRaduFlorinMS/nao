@@ -54,6 +54,9 @@ export const sharedChatRoutes = {
 			if (chatInfo.projectId !== ctx.project.id) {
 				throw new TRPCError({ code: 'NOT_FOUND', message: 'Chat not found.' });
 			}
+			if (chatInfo.userId !== ctx.user.id && ctx.userRole !== 'admin') {
+				throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the creator or an admin can share this.' });
+			}
 
 			const created = await sharedChatQueries.createSharedChat(
 				{
@@ -75,7 +78,7 @@ export const sharedChatRoutes = {
 				projectId: ctx.project.id,
 				sharerId: ctx.user.id,
 				sharerName: ctx.user.name,
-				shareId: created.id,
+				itemId: created.id,
 				itemLabel: 'chat',
 				itemTitle: chatInfo.title,
 				visibility: input.visibility,
@@ -156,7 +159,7 @@ export const sharedChatRoutes = {
 					projectId: ctx.resource.projectId,
 					sharerId: chatOwnerId,
 					sharerName: ownerName,
-					shareId: input.shareId,
+					itemId: input.shareId,
 					itemLabel: 'chat',
 					itemTitle: ctx.resource.title || '',
 					visibility: 'specific',

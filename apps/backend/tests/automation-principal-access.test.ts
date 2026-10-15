@@ -52,7 +52,7 @@ vi.mock('../src/utils/logger', () => ({
 	logger: { info: vi.fn(), error: vi.fn() },
 }));
 
-import { runAutomation } from '../src/handlers/automation.handler';
+import { automationHandler, runAutomation } from '../src/handlers/automation.handler';
 
 describe('automation owner project access', () => {
 	beforeEach(() => {
@@ -95,5 +95,17 @@ describe('automation owner project access', () => {
 			expect.any(Object),
 		);
 		expect(mocks.failAutomationRun).toHaveBeenCalledWith('run-1', 'You do not have access to this project.');
+	});
+
+	it('passes the scheduler-verified project through the run', async () => {
+		await expect(automationHandler({ automationId: 'automation-1' })).rejects.toThrow(
+			'You do not have access to this project.',
+		);
+
+		expect(mocks.createAgent).toHaveBeenCalledWith(
+			expect.any(Object),
+			undefined,
+			expect.objectContaining({ billingAccessVerifiedProjectId: 'project-1' }),
+		);
 	});
 });

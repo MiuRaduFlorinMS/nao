@@ -1,12 +1,14 @@
 import {
 	type DatabaseContextAccess,
 	type DocsContextAccess,
+	type FilesContextAccess,
 	type ToolCallDensityPolicy,
 	USER_GROUP_FEATURES,
 	type UserGroupFeature,
 	type UserGroupRowPolicies,
 } from '@nao/shared';
 
+import { env } from '../env';
 import { HandlerError } from '../utils/error';
 import { resolveAvailableUserGroupAccess } from './user-group-availability.service';
 
@@ -22,6 +24,7 @@ export interface EffectiveUserGroupAccess {
 	toolCallDensityPolicy: ToolCallDensityPolicy;
 	databaseAccess: DatabaseContextAccess;
 	docsAccess: DocsContextAccess;
+	filesAccess: FilesContextAccess;
 }
 
 export interface EffectiveUserGroupAccessForUserDetail extends EffectiveUserGroupAccess {
@@ -83,6 +86,8 @@ function featureLabel(feature: UserGroupFeature): string {
 	switch (feature) {
 		case 'storyCreation':
 			return 'Story creation';
+		case 'customStoryCreation':
+			return 'Custom story creation';
 		case 'automationCreation':
 			return 'Automation creation';
 	}
@@ -124,11 +129,13 @@ function formatEffectiveUserGroupAccess(
 		toolCallDensityPolicy: access.toolCallDensityPolicy,
 		databaseAccess: access.databaseAccess,
 		docsAccess: access.docsAccess,
+		filesAccess: access.filesAccess,
 	};
 }
 
 interface AgentFeaturePolicy {
 	requiredTool?: string;
+	isOffered?: () => boolean;
 	restrictionMessage: string;
 }
 
@@ -137,6 +144,12 @@ const AGENT_FEATURE_POLICIES: Record<UserGroupFeature, AgentFeaturePolicy> = {
 		requiredTool: 'story',
 		restrictionMessage:
 			'Story creation through the agent is unavailable for this user in this project. Do not attempt or offer to create a new Story, and do not suggest Story mode. You may update or replace existing Stories with the Story tool. If asked, explain that their group does not grant Story creation.',
+	},
+	customStoryCreation: {
+		requiredTool: 'story',
+		isOffered: () => env.BETA_CUSTOM_STORIES_ENABLED,
+		restrictionMessage:
+			'Custom story creation is unavailable for this user in this project. Never create a story with format "custom" and do not suggest Custom story mode; build classic stories only. If asked, explain that their group does not grant custom stories.',
 	},
 	automationCreation: {
 		restrictionMessage:
@@ -148,6 +161,6 @@ function isAgentFeaturePolicyRelevant(
 	feature: UserGroupFeature,
 	agentTools: Readonly<Record<string, unknown>>,
 ): boolean {
-	const requiredTool = AGENT_FEATURE_POLICIES[feature].requiredTool;
-	return requiredTool === undefined || requiredTool in agentTools;
+	const { requiredTool, isOffered } = AGENT_FEATURE_POLICIES[feature];
+	return (isOffered?.() ?? true) && (requiredTool === undefined || requiredTool in agentTools);
 }

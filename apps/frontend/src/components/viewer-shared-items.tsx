@@ -14,6 +14,7 @@ import {
 	LiveBadge,
 	SharingBadge,
 } from '@/components/item-card';
+import { CustomStoryThumbnail } from '@/components/custom-story-thumbnail';
 import { PaperSheet, StoryThumbnail } from '@/components/story-thumbnail';
 import StoryIcon from '@/components/ui/story-icon';
 import { formatRelativeDate } from '@/lib/time-ago';
@@ -56,17 +57,23 @@ export function ViewerEmptyState() {
 function SharedStoryCard({ item, displayMode }: { item: SharedItem; displayMode: StoryPanelDisplayMode }) {
 	if (displayMode === 'lines') {
 		return (
-			<Link to='/stories/shared/$shareId' params={{ shareId: item.id }} className={LINES_CARD_CLASS}>
+			<Link to='/stories/$storyId' params={{ storyId: item.id }} className={LINES_CARD_CLASS}>
 				<SharedItemLine item={item} icon={<StoryIcon className='size-3.5 text-muted-foreground shrink-0' />} />
 			</Link>
 		);
 	}
 
 	return (
-		<Link to='/stories/shared/$shareId' params={{ shareId: item.id }} className={GRID_CARD_CLASS}>
+		<Link to='/stories/$storyId' params={{ storyId: item.id }} className={GRID_CARD_CLASS}>
 			<SharedItemGrid
 				item={item}
-				thumbnail={<StoryThumbnail summary={item.summary as StoryThumbnailSummary} />}
+				thumbnail={
+					item.format === 'custom' ? (
+						<CustomStoryThumbnail />
+					) : (
+						<StoryThumbnail summary={item.summary as StoryThumbnailSummary} />
+					)
+				}
 			/>
 		</Link>
 	);

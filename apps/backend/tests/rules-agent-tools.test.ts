@@ -17,6 +17,7 @@ let originalEnv: typeof process.env;
 beforeEach(() => {
 	originalEnv = { ...process.env };
 	process.env.NAO_STORAGE_BACKEND = 'none';
+	process.env.BETA_CUSTOM_STORIES_ENABLED = 'false';
 	__reloadEnvForTesting();
 	__resetStorageForTesting();
 	projectFolder = fs.mkdtempSync(path.join(os.tmpdir(), 'nao-rules-tools-'));
@@ -148,6 +149,7 @@ function context(groupNames: string[] | null): ToolContext {
 		projectFolder,
 		warehouseTableAccess: { enforced: false },
 		docsContextAccess: { enforced: false },
+		filesContextAccess: { enforced: false },
 		userRulesGroupAccess: groupNames === null ? { enforced: false } : { enforced: true, groupNames },
 	} as ToolContext;
 }

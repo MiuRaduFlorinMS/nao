@@ -1,29 +1,36 @@
 import { createHash } from 'node:crypto';
 
 import { stripSqlFilterBlocks } from '@nao/shared/sql-template';
-import { TAG_ATTRS } from '@nao/shared/story-segments';
+import type { StoryNarratives } from '@nao/shared/story-app';
+import { extractQueryIds, TAG_ATTRS } from '@nao/shared/story-segments';
 import { LOCAL_DATABASE_ID } from '@nao/shared/tools';
+import type { StoryFormat } from '@nao/shared/types';
 import { generateText, Output } from 'ai';
 import { CronExpressionParser } from 'cron-parser';
 import { z } from 'zod';
 
 import { llmTelemetry } from '../agents/telemetry';
 import { queryAppDb } from '../agents/tools/query-app-db';
-import { LiveStoryRefreshPrompt } from '../components/ai/live-story-refresh-prompt';
+import { LiveCustomStoryNarrativesPrompt, LiveStoryRefreshPrompt } from '../components/ai/live-story-refresh-prompt';
 import type { DBStoryDataCache } from '../db/abstractSchema';
 import { renderToMarkdown } from '../lib/markdown';
 import * as chatQueries from '../queries/chat.queries';
+import * as executeSqlQueries from '../queries/execute-sql.queries';
 import * as llmConfigQueries from '../queries/project-llm-config.queries';
 import { getQueryDataFromCode } from '../queries/shared-story.queries';
 import * as storyQueries from '../queries/story.queries';
+import * as storyFileQueries from '../queries/story-file.queries';
 import type { StoryQuerySources } from '../types/story-cache';
 import type { QueryResult, ToolContext } from '../types/tools';
 import { convertToTokenUsage } from '../utils/ai';
 import { getDefaultModelId, resolveDefaultModelSelection, resolveProviderModel } from '../utils/llm';
 import { scheduleSaveLlmInferenceRecord } from '../utils/schedule-task';
 import { referencedQueryIds } from '../utils/sql-file-paths';
-import { backfillMissingQueryData, findMissingQueryIds } from '../utils/story-query-data';
+import type { StoryNarrativeSource } from '../utils/story-kit-narratives';
+import { extractStoryNarratives } from '../utils/story-kit-narratives';
+import { backfillMissingQueryData, extractCustomStoryQueryIds, findMissingQueryIds } from '../utils/story-query-data';
 import { buildToolContext, MAX_OUTPUT_TOKENS } from './agent';
+import { assertProjectCloudBillingAccess } from './cloud-billing-access.service';
 import { resolveExcludedColumnEnforcement } from './excluded-columns.service';
 import { runQueryOnLocalFiles } from './local-query.service';
 import { executeWarehouseSql } from './warehouse-sql.service';
@@ -42,38 +49,53 @@ export type StoryQueryData = Record<string, { data: unknown[]; columns: string[]
 export async function executeLiveQuery(
 	chatId: string,
 	queryId: string,
+	options: StoryRefreshOptions = {},
 ): Promise<{ data: unknown[]; columns: string[] }> {
 	const query = await storyQueries.getSqlQueryById(chatId, queryId);
 	if (!query) {
 		throw new Error(`Query ${queryId} not found in chat ${chatId}`);
 	}
 
-	const queryData = await executeStoryQueries(chatId, { [queryId]: query }, { renderSql: stripSqlFilterBlocks });
+	const queryData = await executeStoryQueries(
+		chatId,
+		{ [queryId]: query },
+		{ renderSql: stripSqlFilterBlocks, billingAccessVerifiedProjectId: options.billingAccessVerifiedProjectId },
+	);
 	return queryData[queryId]!;
 }
 
 export interface RefreshResult {
 	queryData: StoryQueryData;
+	narratives: StoryNarratives;
 }
 
-export async function refreshStoryData(chatId: string, slug: string): Promise<RefreshResult> {
-	const { queryData } = await refreshStoryDataWithContext(chatId, slug);
-	return { queryData };
+interface StoryRefreshOptions {
+	billingAccessVerifiedProjectId?: string;
+}
+
+export async function refreshStoryData(
+	chatId: string,
+	slug: string,
+	options: StoryRefreshOptions = {},
+): Promise<RefreshResult> {
+	const { queryData, narratives } = await refreshStoryDataWithContext(chatId, slug, undefined, options);
+	return { queryData, narratives };
 }
 
 async function refreshStoryDataWithContext(
 	chatId: string,
 	slug: string,
 	existingExecutionContext?: StoryExecutionContext,
+	options: StoryRefreshOptions = {},
 ): Promise<RefreshResult & { code: string }> {
 	const version = await storyQueries.getLatestVersionByChatAndSlug(chatId, slug);
 	if (!version) {
 		throw new Error('Story not found');
 	}
 
-	const sqlQueries = await storyQueries.getSqlQueriesFromCode(chatId, version.code);
+	const sqlQueries = await getVersionSqlQueries(chatId, version);
 	if (Object.keys(sqlQueries).length === 0) {
-		return { queryData: {}, code: version.code };
+		return { queryData: {}, code: version.code, narratives: {} };
 	}
 
 	const chat = await chatQueries.getChatInfo(chatId);
@@ -85,25 +107,37 @@ async function refreshStoryDataWithContext(
 		renderSql: stripSqlFilterBlocks,
 		executionContext: existingExecutionContext,
 		projectId: chat.projectId,
+		billingAccessVerifiedProjectId: options.billingAccessVerifiedProjectId,
 	});
 
 	let refreshedCode = version.code;
-	if (version.isLiveTextDynamic) {
-		const newCode = await generateDynamicStoryCode(
-			{ projectId: chat.projectId, userId: chat.userId, chatId },
-			version.title,
-			version.code,
-			queryData,
-		);
+	const target = { projectId: chat.projectId, userId: chat.userId, chatId };
+	if (version.isLiveTextDynamic && version.format === 'classic') {
+		const newCode = await generateDynamicStoryCode(target, version.title, version.code, queryData);
 		if (newCode) {
 			await storyQueries.updateLatestVersionCode(chatId, slug, newCode);
 			refreshedCode = newCode;
 		}
 	}
 
-	await storyQueries.upsertStoryDataCache(chatId, slug, queryData, buildQuerySources(sqlQueries));
+	const narratives =
+		version.isLiveTextDynamic && version.format === 'custom'
+			? await regenerateCustomStoryNarratives(target, version, queryData)
+			: {};
+	await storyQueries.upsertStoryDataCache(chatId, slug, queryData, buildQuerySources(sqlQueries), narratives);
 
-	return { queryData, code: refreshedCode };
+	return { queryData, code: refreshedCode, narratives };
+}
+
+async function getVersionSqlQueries(
+	chatId: string,
+	version: { id: string; code: string; format: StoryFormat },
+): Promise<Record<string, { sqlQuery: string; databaseId?: string; adminMode: boolean }>> {
+	if (version.format === 'classic') {
+		return storyQueries.getSqlQueriesFromCode(chatId, version.code);
+	}
+	const queryIds = extractCustomStoryQueryIds(await storyFileQueries.listVersionFiles(version.id));
+	return queryIds.size > 0 ? executeSqlQueries.getLatestSqlQueriesByIds(chatId, queryIds) : {};
 }
 
 export interface StoryQueryDataResult {
@@ -111,6 +145,14 @@ export interface StoryQueryDataResult {
 	cachedAt: Date | null;
 	code: string;
 	allowsPersistedFallback?: boolean;
+	needsRefresh?: boolean;
+}
+
+interface StoryQueryDataOptions {
+	/** Return the stored data right away and leave the refresh to the caller, instead of refreshing inline. */
+	deferRefresh?: boolean;
+	/** Same, but only for a story that was never cached, so going live does not block on its first refresh. */
+	deferFirstRefresh?: boolean;
 }
 
 export async function getStoryQueryData(
@@ -119,6 +161,7 @@ export async function getStoryQueryData(
 	code: string,
 	isLive: boolean,
 	cacheSchedule: string | null,
+	options: StoryQueryDataOptions = {},
 ): Promise<StoryQueryDataResult> {
 	if (!isLive) {
 		return {
@@ -134,6 +177,10 @@ export async function getStoryQueryData(
 		return resolveLegacyCache(chatId, code, cache);
 	}
 
+	if (shouldDeferRefresh(options, cache, code)) {
+		return { ...(await resolveStoredQueryData(chatId, code, cache)), needsRefresh: true };
+	}
+
 	try {
 		const { queryData, code: refreshedCode } = await refreshStoryDataWithContext(chatId, slug);
 		return {
@@ -142,15 +189,28 @@ export async function getStoryQueryData(
 			code: refreshedCode,
 		};
 	} catch {
-		if (cache) {
-			return resolveLegacyCache(chatId, code, cache);
-		}
-		return {
-			queryData: await getQueryDataFromCode(chatId, code),
-			cachedAt: null,
-			code,
-		};
+		return resolveStoredQueryData(chatId, code, cache);
 	}
+}
+
+function shouldDeferRefresh(options: StoryQueryDataOptions, cache: DBStoryDataCache | null, code: string): boolean {
+	const isDeferred = options.deferRefresh || (options.deferFirstRefresh && cache === null);
+	return Boolean(isDeferred) && extractQueryIds(code).size > 0;
+}
+
+async function resolveStoredQueryData(
+	chatId: string,
+	code: string,
+	cache: DBStoryDataCache | null,
+): Promise<StoryQueryDataResult> {
+	if (cache) {
+		return resolveLegacyCache(chatId, code, cache);
+	}
+	return {
+		queryData: await getQueryDataFromCode(chatId, code),
+		cachedAt: null,
+		code,
+	};
 }
 
 async function resolveLegacyCache(
@@ -199,6 +259,7 @@ interface StoryQueryExecutionOptions {
 	renderSql: (sqlQuery: string) => string;
 	executionContext?: StoryExecutionContext;
 	projectId?: string;
+	billingAccessVerifiedProjectId?: string;
 }
 
 /**
@@ -211,12 +272,15 @@ export async function executeStoryQueries(
 	sqlQueries: StorySqlQueries,
 	options: StoryQueryExecutionOptions,
 ): Promise<StoryQueryData> {
+	const projectId =
+		options.executionContext?.toolContext.projectId ?? options.projectId ?? (await requireChatProjectId(chatId));
+	if (options.billingAccessVerifiedProjectId !== projectId) {
+		await assertProjectCloudBillingAccess(projectId);
+	}
 	const queries = { ...(await loadUpstreamQueries(chatId, sqlQueries)), ...sqlQueries };
 	const executionContext = Object.values(queries).some((query) => !query.adminMode)
 		? (options.executionContext ?? (await createStoryExecutionContext(chatId)))
 		: null;
-	const projectId =
-		executionContext?.toolContext.projectId ?? options.projectId ?? (await requireChatProjectId(chatId));
 	const running = new Map<string, Promise<QueryResult>>();
 
 	const run = (queryId: string, ancestors: Set<string>): Promise<QueryResult> => {
@@ -235,7 +299,7 @@ export async function executeStoryQueries(
 			throw new Error('Live Story warehouse query has no execution context.');
 		}
 		if (query.databaseId !== LOCAL_DATABASE_ID) {
-			return executeRawSql(sql, { executionContext, databaseId: query.databaseId });
+			return executeBillingValidatedRawSql(sql, { executionContext, databaseId: query.databaseId });
 		}
 
 		const lineage = new Set([...ancestors, queryId]);
@@ -279,9 +343,18 @@ async function loadUpstreamQueries(chatId: string, sqlQueries: StorySqlQueries):
 interface RawSqlExecutionOptions {
 	executionContext: StoryExecutionContext;
 	databaseId?: string;
+	billingAccessVerifiedProjectId?: string;
 }
 
 export async function executeRawSql(sqlQuery: string, options: RawSqlExecutionOptions): Promise<QueryResult> {
+	const projectId = options.executionContext.toolContext.projectId;
+	if (options.billingAccessVerifiedProjectId !== projectId) {
+		await assertProjectCloudBillingAccess(projectId);
+	}
+	return executeBillingValidatedRawSql(sqlQuery, options);
+}
+
+async function executeBillingValidatedRawSql(sqlQuery: string, options: RawSqlExecutionOptions): Promise<QueryResult> {
 	const context = options.executionContext.toolContext;
 	if (options.databaseId === LOCAL_DATABASE_ID) {
 		return executeLocalSql(sqlQuery, context);
@@ -329,7 +402,7 @@ async function executeAppDatabaseSql(projectId: string, sqlQuery: string): Promi
 	return { data: rows, columns };
 }
 
-function isCacheExpired(cachedAt: Date, cacheSchedule: string | null): boolean {
+export function isCacheExpired(cachedAt: Date, cacheSchedule: string | null): boolean {
 	if (!cacheSchedule) {
 		return false;
 	}
@@ -349,16 +422,8 @@ async function generateDynamicStoryCode(
 	originalCode: string,
 	queryData: Record<string, { data: unknown[]; columns: string[] }>,
 ): Promise<string | null> {
-	const { projectId } = target;
-	const pinned = await resolveDefaultModelSelection(projectId, 'live_story');
-	const provider = pinned?.provider ?? (await llmConfigQueries.getProjectModelProvider(projectId));
-	if (!provider) {
-		return null;
-	}
-
-	const modelId = pinned?.modelId ?? getDefaultModelId(provider);
-	const model = await resolveProviderModel(projectId, provider, modelId);
-	if (!model) {
+	const liveStoryModel = await resolveLiveStoryModel(target.projectId);
+	if (!liveStoryModel) {
 		return null;
 	}
 
@@ -366,28 +431,13 @@ async function generateDynamicStoryCode(
 		const querySummaries = buildQueryDataSummary(queryData);
 		const systemPrompt = renderToMarkdown(LiveStoryRefreshPrompt({ title, originalCode, querySummaries }));
 
-		const { output, usage } = await generateText({
-			...model,
-			system: systemPrompt,
-			messages: [{ role: 'user', content: 'Refresh the story narrative with the latest query results.' }],
-			output: Output.object({
-				schema: z.object({
-					code: z.string().min(1),
-				}),
-			}),
-			maxOutputTokens: MAX_OUTPUT_TOKENS,
-			experimental_telemetry: llmTelemetry('nao-live-story', { projectId, tags: [provider] }),
-		});
-
-		scheduleSaveLlmInferenceRecord({
-			type: 'live_story_refresh',
-			projectId,
-			userId: target.userId,
-			chatId: target.chatId,
-			llmProvider: provider,
-			llmModelId: model.model.modelId,
-			...convertToTokenUsage(usage),
-		});
+		const output = await generateLiveStoryOutput(
+			target,
+			liveStoryModel,
+			systemPrompt,
+			'Refresh the story narrative with the latest query results.',
+			z.object({ code: z.string().min(1) }),
+		);
 
 		const candidate = stripCodeFence(output.code.trim());
 		if (!candidate || !preservesStoryStructure(originalCode, candidate)) {
@@ -398,6 +448,93 @@ async function generateDynamicStoryCode(
 	} catch (error) {
 		throw error instanceof Error ? error : new Error(String(error));
 	}
+}
+
+/** Narratives are rewritten from the text in the published source, never from a previous refresh, so they cannot drift. */
+async function regenerateCustomStoryNarratives(
+	target: StoryRefreshTarget,
+	version: { id: string; title: string },
+	queryData: Record<string, { data: unknown[]; columns: string[] }>,
+): Promise<StoryNarratives> {
+	const sources = extractStoryNarratives(await storyFileQueries.listVersionFiles(version.id));
+	if (sources.length === 0) {
+		return {};
+	}
+	const liveStoryModel = await resolveLiveStoryModel(target.projectId);
+	if (!liveStoryModel) {
+		return {};
+	}
+
+	const systemPrompt = renderToMarkdown(
+		LiveCustomStoryNarrativesPrompt({
+			title: version.title,
+			narratives: sources,
+			querySummaries: buildQueryDataSummary(queryData),
+		}),
+	);
+	const output = await generateLiveStoryOutput(
+		target,
+		liveStoryModel,
+		systemPrompt,
+		'Rewrite every narrative with the latest query results.',
+		z.object({ narratives: z.array(z.object({ id: z.string(), text: z.string() })) }),
+	);
+	return keepKnownNarratives(sources, output.narratives);
+}
+
+function keepKnownNarratives(sources: StoryNarrativeSource[], rewritten: StoryNarrativeSource[]): StoryNarratives {
+	const knownIds = new Set(sources.map((source) => source.id));
+	const narratives: StoryNarratives = {};
+	for (const { id, text } of rewritten) {
+		const trimmed = text.trim();
+		if (knownIds.has(id) && trimmed) {
+			narratives[id] = trimmed;
+		}
+	}
+	return narratives;
+}
+
+type LiveStoryModel = NonNullable<Awaited<ReturnType<typeof resolveLiveStoryModel>>>;
+
+async function resolveLiveStoryModel(projectId: string) {
+	const pinned = await resolveDefaultModelSelection(projectId, 'live_story');
+	const provider = pinned?.provider ?? (await llmConfigQueries.getProjectModelProvider(projectId));
+	if (!provider) {
+		return null;
+	}
+
+	const modelId = pinned?.modelId ?? getDefaultModelId(provider);
+	const model = await resolveProviderModel(projectId, provider, modelId);
+	return model ? { provider, model } : null;
+}
+
+async function generateLiveStoryOutput<T>(
+	target: StoryRefreshTarget,
+	{ provider, model }: LiveStoryModel,
+	systemPrompt: string,
+	instruction: string,
+	schema: z.ZodType<T>,
+): Promise<T> {
+	const { output, usage } = await generateText({
+		...model,
+		system: systemPrompt,
+		messages: [{ role: 'user', content: instruction }],
+		output: Output.object({ schema }),
+		maxOutputTokens: MAX_OUTPUT_TOKENS,
+		experimental_telemetry: llmTelemetry('nao-live-story', { projectId: target.projectId, tags: [provider] }),
+	});
+
+	scheduleSaveLlmInferenceRecord({
+		type: 'live_story_refresh',
+		projectId: target.projectId,
+		userId: target.userId,
+		chatId: target.chatId,
+		llmProvider: provider,
+		llmModelId: model.model.modelId,
+		...convertToTokenUsage(usage),
+	});
+
+	return output;
 }
 
 function buildQueryDataSummary(queryData: Record<string, { data: unknown[]; columns: string[] }>) {

@@ -498,6 +498,55 @@
       "when": 1790691342292,
       "tag": "0070_shared_story_group_access",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1790775949653,
+      "tag": "0071_story_certification",
+      "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1790932957188,
+      "tag": "0072_custom_stories",
+      "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1790932958188,
+      "tag": "0073_story_fork_metadata_story_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1791204013795,
+      "tag": "0074_organization_billing",
+      "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1791306214210,
+      "tag": "0075_bypass_billing",
+      "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1791358973879,
+      "tag": "0076_member_budgets",
+      "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1791358974879,
+      "tag": "0077_story_app_state",
+      "breakpoints": true
     }
   ]
 }

@@ -8,8 +8,10 @@ import { cn, hideIf } from '@/lib/utils';
 
 interface NavContext {
 	isAdmin: boolean;
+	isCloudBillingEnabled: boolean;
 	isContextAdmin: boolean;
 	isCloud: boolean;
+	isOrgAdmin: boolean;
 	isViewer: boolean;
 }
 
@@ -31,23 +33,34 @@ interface NavGroup {
 
 const settingsNavGroups: NavGroup[] = [
 	{
+		label: 'User',
+		items: [
+			{
+				label: 'Account',
+				to: '/settings/account',
+				visible: ({ isViewer }) => !isViewer,
+				exact: true,
+			},
+		],
+	},
+	{
 		label: 'Project',
 		items: [
 			{
-				label: 'Project Settings & Budget',
+				label: 'Project Settings',
 				to: '/settings/project',
 				visible: ({ isViewer }) => !isViewer,
 				exact: true,
 			},
 			{
-				label: 'Team',
-				to: '/settings/project/team',
+				label: 'Budget',
+				to: '/settings/project/budgets',
 				visible: ({ isViewer }) => !isViewer,
 			},
 			{
-				label: 'User Groups',
+				label: 'Users & Groups',
 				to: '/settings/project/user-groups',
-				visible: ({ isAdmin }) => isAdmin,
+				visible: ({ isViewer }) => !isViewer,
 			},
 			{
 				label: 'Agent',
@@ -78,8 +91,6 @@ const settingsNavGroups: NavGroup[] = [
 				label: 'Recommendations',
 				to: '/settings/recommendations',
 				visible: ({ isAdmin, isContextAdmin }) => isAdmin || isContextAdmin,
-				badge: 'Beta',
-				badgeVariant: 'new',
 			},
 			{
 				label: 'File Explorer',
@@ -132,6 +143,12 @@ const settingsNavGroups: NavGroup[] = [
 				exact: true,
 			},
 			{
+				label: 'Plan & Billing',
+				to: '/settings/organization/billing',
+				visible: ({ isCloudBillingEnabled, isOrgAdmin }) => isCloudBillingEnabled && isOrgAdmin,
+				exact: true,
+			},
+			{
 				label: 'Storage',
 				to: '/settings/storage',
 				visible: ({ isViewer, isCloud }) => !isViewer && !isCloud,
@@ -154,6 +171,8 @@ interface SidebarSettingsNavProps {
 	isContextAdmin: boolean;
 	isViewer: boolean;
 	isCloud: boolean;
+	isCloudBillingEnabled: boolean;
+	isOrgAdmin: boolean;
 }
 
 export function SidebarSettingsNav({
@@ -162,16 +181,20 @@ export function SidebarSettingsNav({
 	isContextAdmin,
 	isViewer,
 	isCloud,
+	isCloudBillingEnabled,
+	isOrgAdmin,
 }: SidebarSettingsNavProps) {
 	const navigate = useNavigate();
 	const inputRef = useRef<HTMLInputElement>(null);
 	const [query, setQuery] = useState('');
 	const [isSearchFocused, setIsSearchFocused] = useState(false);
 
-	const navContext = {
+	const navContext: NavContext = {
 		isAdmin,
+		isCloudBillingEnabled,
 		isContextAdmin,
 		isCloud,
+		isOrgAdmin,
 		isViewer,
 	};
 	const navGroups = settingsNavGroups

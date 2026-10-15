@@ -2,13 +2,14 @@ import {
 	EMPTY_PROJECT_ROW_SECURITY,
 	filterProjectRowSecurityByDatabaseContext,
 	resolveWarehouseRowSecurity,
-	USER_GROUP_FEATURE_DEFINITIONS,
 } from '@nao/shared';
+import { Lock } from 'lucide-react';
 import { USER_ROLE_LABELS } from '@nao/shared/types';
 import type { MemberStatus, UserRole } from '@nao/shared/types';
 import type {
 	DatabaseContextAccess,
 	DocsContextAccess,
+	FilesContextAccess,
 	ProjectRowSecurity,
 	ToolCallDensityPolicy,
 	UserGroupFeature,
@@ -17,17 +18,19 @@ import type {
 } from '@nao/shared';
 
 import type { DatabaseContextObject } from '@/components/settings/user-group-context-access';
-import type { DocsContextCatalogEntry } from '@/components/settings/user-group-docs-context-access';
+import type { FileTreeCatalogEntry } from '@/components/settings/user-group-file-tree-access';
 import type { UserGroupEditorGroup } from '@/components/settings/user-group-editor';
 import { ResponsiveGroupChips } from '@/components/settings/user-group-chips';
 import { getEffectiveUserGroupAccessSummary } from '@/components/settings/user-group-access-summary';
 import { UserGroupEffectiveContext } from '@/components/settings/user-group-effective-context';
 import { UserGroupFeatureSummaryCard } from '@/components/settings/user-group-feature-card';
+import { UserGroupUserBudget } from '@/components/settings/user-group-user-budget';
 import { UpgradeToEnterprise } from '@/components/settings/upgrade-to-enterprise';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { TabBar, TabPanel } from '@/components/ui/tab-bar';
 import { useLicenseFeatures } from '@/hooks/use-license';
+import { useOfferedUserGroupFeatures } from '@/hooks/use-offered-user-group-features';
 
 interface UserGroupDetailUser {
 	id: string;
@@ -42,10 +45,11 @@ interface EffectiveUserGroupAccess {
 	toolCallDensityPolicy: ToolCallDensityPolicy;
 	databaseAccess: DatabaseContextAccess;
 	docsAccess: DocsContextAccess;
+	filesAccess: FilesContextAccess;
 	rowPolicies: UserGroupRowPolicies[];
 }
 
-export type UserGroupUserDetailTab = 'features' | 'context' | 'security';
+export type UserGroupUserDetailTab = 'features' | 'context' | 'security' | 'budget';
 
 interface UserGroupUserDetailProps {
 	user: UserGroupDetailUser;
@@ -53,13 +57,17 @@ interface UserGroupUserDetailProps {
 	memberships: Array<{ groupId: string; userId: string }>;
 	effectiveAccess: EffectiveUserGroupAccess;
 	contextObjects: DatabaseContextObject[];
-	docsEntries: DocsContextCatalogEntry[];
+	docsEntries: FileTreeCatalogEntry[];
+	filesEntries: FileTreeCatalogEntry[];
 	databaseSyncState?: 'missing' | 'ready';
 	docsSyncState?: 'missing' | 'ready';
+	filesSyncState?: 'missing' | 'ready';
 	databaseCatalogState?: 'loading' | 'error' | 'ready';
 	docsCatalogState?: 'loading' | 'error' | 'ready';
+	filesCatalogState?: 'loading' | 'error' | 'ready';
 	onRetryDatabaseCatalog?: () => void;
 	onRetryDocsCatalog?: () => void;
+	onRetryFilesCatalog?: () => void;
 	projectRowSecurity?: ProjectRowSecurity;
 	securityState?: 'loading' | 'error' | 'ready';
 	onRetrySecurity?: () => void;
@@ -71,6 +79,7 @@ const tabs = [
 	{ id: 'features', label: 'Features' },
 	{ id: 'context', label: 'Context' },
 	{ id: 'security', label: 'Security' },
+	{ id: 'budget', label: 'Budget' },
 ] satisfies Array<{ id: UserGroupUserDetailTab; label: string }>;
 
 export function UserGroupUserDetail({
@@ -80,18 +89,25 @@ export function UserGroupUserDetail({
 	effectiveAccess,
 	contextObjects,
 	docsEntries,
+	filesEntries,
 	databaseSyncState,
 	docsSyncState,
+	filesSyncState,
 	databaseCatalogState = 'ready',
 	docsCatalogState = 'ready',
+	filesCatalogState = 'ready',
 	onRetryDatabaseCatalog,
 	onRetryDocsCatalog,
+	onRetryFilesCatalog,
 	projectRowSecurity = EMPTY_PROJECT_ROW_SECURITY,
 	securityState = 'ready',
 	onRetrySecurity,
 	activeTab,
 	onTabChange,
 }: UserGroupUserDetailProps) {
+	const license = useLicenseFeatures();
+	const hasMemberBudget = license.data?.['user-budget'] === true;
+	const memberBudgetTabUnavailable = !license.isLoading && !hasMemberBudget;
 	const membershipGroupIds = new Set(
 		memberships.filter((membership) => membership.userId === user.id).map((membership) => membership.groupId),
 	);
@@ -100,10 +116,32 @@ export function UserGroupUserDetail({
 	const accessSummary =
 		databaseCatalogState === 'ready' &&
 		docsCatalogState === 'ready' &&
+		filesCatalogState === 'ready' &&
 		databaseSyncState === 'ready' &&
-		docsSyncState === 'ready'
-			? getEffectiveUserGroupAccessSummary(effectiveAccess, contextObjects, docsEntries)
+		docsSyncState === 'ready' &&
+		filesSyncState === 'ready'
+			? getEffectiveUserGroupAccessSummary(effectiveAccess, contextObjects, docsEntries, filesEntries)
 			: undefined;
+	const detailTabs = tabs.map((tab) =>
+		tab.id === 'budget'
+			? {
+					...tab,
+					label: memberBudgetTabUnavailable ? (
+						<span className='flex items-center gap-1.5'>
+							Budget
+							<span
+								aria-hidden='true'
+								className='inline-flex size-5 items-center justify-center rounded-full bg-primary/10 text-primary'
+							>
+								<Lock className='size-3' />
+							</span>
+						</span>
+					) : (
+						tab.label
+					),
+				}
+			: tab,
+	);
 
 	return (
 		<div className='flex flex-col gap-6'>
@@ -135,7 +173,7 @@ export function UserGroupUserDetail({
 					<p className='text-xs text-muted-foreground'>Effective access from all applicable groups.</p>
 				</div>
 				<TabBar
-					tabs={tabs}
+					tabs={detailTabs}
 					activeTab={activeTab}
 					onTabChange={onTabChange}
 					idBase='user-group-user-detail'
@@ -147,14 +185,19 @@ export function UserGroupUserDetail({
 						<UserGroupEffectiveContext
 							databaseAccess={effectiveAccess.databaseAccess}
 							docsAccess={effectiveAccess.docsAccess}
+							filesAccess={effectiveAccess.filesAccess}
 							contextObjects={contextObjects}
 							docsEntries={docsEntries}
+							filesEntries={filesEntries}
 							databaseSyncState={databaseSyncState}
 							docsSyncState={docsSyncState}
+							filesSyncState={filesSyncState}
 							databaseCatalogState={databaseCatalogState}
 							docsCatalogState={docsCatalogState}
+							filesCatalogState={filesCatalogState}
 							onRetryDatabaseCatalog={onRetryDatabaseCatalog}
 							onRetryDocsCatalog={onRetryDocsCatalog}
+							onRetryFilesCatalog={onRetryFilesCatalog}
 						/>
 					)}
 					{activeTab === 'security' && (
@@ -166,6 +209,7 @@ export function UserGroupUserDetail({
 							onRetry={onRetrySecurity}
 						/>
 					)}
+					{activeTab === 'budget' && <UserGroupUserBudget userId={user.id} isLicensed={hasMemberBudget} />}
 				</TabPanel>
 			</section>
 		</div>
@@ -173,6 +217,7 @@ export function UserGroupUserDetail({
 }
 
 function EffectiveFeatures({ access }: { access: EffectiveUserGroupAccess }) {
+	const offeredFeatures = useOfferedUserGroupFeatures();
 	return (
 		<div className='flex flex-col gap-5'>
 			<div className='flex flex-col gap-3'>
@@ -183,7 +228,7 @@ function EffectiveFeatures({ access }: { access: EffectiveUserGroupAccess }) {
 					</p>
 				</div>
 				<div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
-					{USER_GROUP_FEATURE_DEFINITIONS.map((feature) => (
+					{offeredFeatures.map((feature) => (
 						<UserGroupFeatureSummaryCard
 							key={feature.key}
 							feature={feature}

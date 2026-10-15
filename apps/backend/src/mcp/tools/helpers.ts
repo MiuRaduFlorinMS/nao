@@ -37,6 +37,15 @@ export async function resolveChartChatId(chatId: string | undefined, ctx: McpCon
 	return chatId;
 }
 
+export function generateStorySlug(title: string): string {
+	return (
+		title
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, '-')
+			.replace(/^-|-$/g, '') || `untitled-${randomUUID().slice(0, 8)}`
+	);
+}
+
 export async function resolveStory(storyId: string, ctx: McpContext): Promise<UserStoryRow> {
 	const story = await storyQueries.getStoryByIdForUser(storyId, ctx.userId);
 	if (!story) {
@@ -49,7 +58,7 @@ export async function resolveStory(storyId: string, ctx: McpContext): Promise<Us
 	return story;
 }
 
-export async function fetchLatestStoryVersion(story: UserStoryRow) {
+export async function fetchLatestStoryVersion(story: Pick<UserStoryRow, 'chatId' | 'id' | 'slug'>) {
 	return story.chatId
 		? storyQueries.getLatestVersionByChatAndSlug(story.chatId, story.slug)
 		: storyQueries.getLatestVersionByStoryId(story.id);
@@ -63,8 +72,7 @@ export async function buildStoryMcpResultWithSandbox(
 ): Promise<ToolResult> {
 	const storyId = String(output.id);
 	const title = typeof output.title === 'string' ? output.title : 'Story';
-	const openInNaoUrl =
-		typeof output.url === 'string' ? output.url : storyUrl({ id: storyId, slug: '', chatId: chatId ?? null });
+	const openInNaoUrl = typeof output.url === 'string' ? output.url : storyUrl(storyId);
 
 	let sandboxStoryHtml: string | null = null;
 	if (code && code.trim().length > 0) {
@@ -346,7 +354,7 @@ export async function buildStoryEmbedFromArtifact(
 
 	const version = await fetchLatestStoryVersion(story);
 	const embedUrl = storyEmbedUrl(story.id, ctx.projectId);
-	const storyForUrl = { id: story.id, slug: story.slug, chatId: story.chatId };
+	const url = storyUrl(story.id);
 
 	const payload: StoryMcpToolPayload = {
 		embedUrl,
@@ -361,11 +369,10 @@ export async function buildStoryEmbedFromArtifact(
 		archived: story.archivedAt !== null,
 		createdAt: story.createdAt,
 		updatedAt: story.updatedAt,
-		url: storyUrl(storyForUrl),
-		chatUrl: storyChatUrl(storyForUrl),
+		url,
+		chatUrl: storyChatUrl(story),
 	};
 
-	const openInNaoUrl = typeof payload.url === 'string' ? payload.url : storyUrl(storyForUrl);
 	let sandboxStoryHtml: string | null = null;
 	const code = version?.code;
 	if (code && code.trim().length > 0) {
@@ -375,7 +382,7 @@ export async function buildStoryEmbedFromArtifact(
 				code,
 				storyId: story.id,
 				projectId: ctx.projectId,
-				openInNaoUrl,
+				openInNaoUrl: url,
 				chatId: story.chatId,
 				userId: ctx.userId,
 			});

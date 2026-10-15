@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod/v4';
 
-import * as orgQueries from '../queries/organization.queries';
 import * as projectQueries from '../queries/project.queries';
 import * as userQueries from '../queries/user.queries';
 import * as githubService from '../services/github';
@@ -14,7 +13,12 @@ import {
 	readProjectNameFromConfig,
 	replaceExistingProject,
 } from '../utils/project-import.utils';
-import { adminProtectedProcedure, contextAdminProtectedProcedure, protectedProcedure } from './trpc';
+import {
+	cloudBillingAdminProcedure,
+	cloudBillingOrganizationProcedure,
+	contextAdminProtectedProcedure,
+	protectedProcedure,
+} from './trpc';
 
 export const githubRoutes = {
 	isAvailable: protectedProcedure.query(() => {
@@ -57,7 +61,7 @@ export const githubRoutes = {
 			}
 		}),
 
-	createProjectFromRepo: protectedProcedure
+	createProjectFromRepo: cloudBillingOrganizationProcedure
 		.input(
 			z.object({
 				repoFullName: z.string(),
@@ -71,11 +75,6 @@ export const githubRoutes = {
 				throw new TRPCError({ code: 'BAD_REQUEST', message: 'GitHub is not connected' });
 			}
 
-			const membership = await orgQueries.getUserOrgMembership(ctx.user.id, ctx.selectedOrganizationId);
-			if (!membership) {
-				throw new TRPCError({ code: 'NOT_FOUND', message: 'You are not a member of any organization' });
-			}
-
 			const cloneDir = createTempProjectDir('github-import');
 			try {
 				try {
@@ -87,7 +86,7 @@ export const githubRoutes = {
 					});
 				}
 
-				const orgId = membership.orgId;
+				const orgId = ctx.organization.id;
 				const projectName =
 					input.projectName ||
 					readProjectNameFromConfig(cloneDir) ||
@@ -106,6 +105,7 @@ export const githubRoutes = {
 						sourceDir: cloneDir,
 						project: existing,
 						projectName,
+						userId: ctx.user.id,
 					});
 				}
 
@@ -130,7 +130,7 @@ export const githubRoutes = {
 		return githubService.getGitInfo(ctx.project.path);
 	}),
 
-	unlinkProject: adminProtectedProcedure.mutation(async ({ ctx }) => {
+	unlinkProject: cloudBillingAdminProcedure.mutation(async ({ ctx }) => {
 		if (!ctx.project.path) {
 			throw new TRPCError({ code: 'BAD_REQUEST', message: 'Project path not configured' });
 		}

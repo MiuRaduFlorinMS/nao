@@ -4,7 +4,9 @@ import {
 	type DocsContextAccess,
 	EMPTY_DATABASE_CONTEXT_ACCESS,
 	EMPTY_DOCS_CONTEXT_ACCESS,
+	EMPTY_FILES_CONTEXT_ACCESS,
 	EMPTY_USER_GROUP_ROW_POLICIES,
+	type FilesContextAccess,
 	filterUserGroupRowPoliciesByDatabaseContext,
 	parseStoredProjectRowSecurity,
 	parseStoredUserGroupConfig,
@@ -21,11 +23,12 @@ import {
 	type StoredProjectRowSecurity,
 	type ToolCallDensityPolicy,
 	unionDatabaseContextAccess,
-	unionDocsContextAccess,
+	unionFileTreeAccess,
 	USER_GROUP_FEATURES,
 	type UserGroupFeature,
 	type UserGroupRowPolicies,
 	type UserGroupSsoMappings,
+	withSatisfiedFeatureDependencies,
 } from '@nao/shared';
 import { and, asc, count, desc, eq, inArray, ne } from 'drizzle-orm';
 
@@ -50,6 +53,7 @@ export interface UserGroup extends Omit<
 	toolCallDensityPolicy: ToolCallDensityPolicy;
 	databaseAccess: DatabaseContextAccess;
 	docsAccess: DocsContextAccess;
+	filesAccess: FilesContextAccess;
 	ssoMappings: UserGroupSsoMappings;
 	rowPolicies: UserGroupRowPolicies;
 }
@@ -67,6 +71,7 @@ export interface EffectiveUserGroupAccess {
 	toolCallDensityPolicy: ToolCallDensityPolicy;
 	databaseAccess: DatabaseContextAccess;
 	docsAccess: DocsContextAccess;
+	filesAccess: FilesContextAccess;
 	rowPolicies: UserGroupRowPolicies[];
 }
 
@@ -155,14 +160,17 @@ export const resolveUserGroupAccess = async (
 
 	return {
 		groupNames: applicableGroups.map((group) => group.name),
-		features: USER_GROUP_FEATURES.filter((feature) => grantedFeatures.has(feature)),
+		features: withSatisfiedFeatureDependencies(
+			USER_GROUP_FEATURES.filter((feature) => grantedFeatures.has(feature)),
+		),
 		toolCallDensityPolicy: {
 			defaultDensity:
 				densitySource?.config.toolCallDensity.defaultDensity ?? DEFAULT_TOOL_CALL_DENSITY_POLICY.defaultDensity,
 			canChange: applicableGroups.some((group) => group.config.toolCallDensity.canChange),
 		},
 		databaseAccess: unionDatabaseContextAccess(applicableGroups.map((group) => group.contextAccess.databaseAccess)),
-		docsAccess: unionDocsContextAccess(applicableGroups.map((group) => group.contextAccess.docsAccess)),
+		docsAccess: unionFileTreeAccess(applicableGroups.map((group) => group.contextAccess.docsAccess)),
+		filesAccess: unionFileTreeAccess(applicableGroups.map((group) => group.contextAccess.filesAccess)),
 		rowPolicies: applicableGroups.map((group) =>
 			filterUserGroupRowPoliciesByDatabaseContext(
 				parseStoredUserGroupRowPolicies(group.rowPolicies),
@@ -225,6 +233,7 @@ export const createUserGroup = async (
 	docsAccess: DocsContextAccess = EMPTY_DOCS_CONTEXT_ACCESS,
 	ssoMappings?: UserGroupSsoMappings,
 	rowPolicies: UserGroupRowPolicies = EMPTY_USER_GROUP_ROW_POLICIES,
+	filesAccess: FilesContextAccess = EMPTY_FILES_CONTEXT_ACCESS,
 ): Promise<UserGroup> => {
 	const values = createUserGroupValues(
 		projectId,
@@ -235,6 +244,7 @@ export const createUserGroup = async (
 		docsAccess,
 		ssoMappings,
 		rowPolicies,
+		filesAccess,
 	);
 	const group = await executeUserGroupNameMutation(async () => {
 		if (dbConfig.dialect === Dialect.Sqlite) {
@@ -267,6 +277,7 @@ export const createUserGroupWithinLimit = async (
 	docsAccess: DocsContextAccess = EMPTY_DOCS_CONTEXT_ACCESS,
 	ssoMappings?: UserGroupSsoMappings,
 	rowPolicies: UserGroupRowPolicies = EMPTY_USER_GROUP_ROW_POLICIES,
+	filesAccess: FilesContextAccess = EMPTY_FILES_CONTEXT_ACCESS,
 ): Promise<UserGroup> => {
 	const values = createUserGroupValues(
 		projectId,
@@ -277,6 +288,7 @@ export const createUserGroupWithinLimit = async (
 		docsAccess,
 		ssoMappings,
 		rowPolicies,
+		filesAccess,
 	);
 	const group = await executeUserGroupNameMutation(() => {
 		if (dbConfig.dialect === Dialect.Sqlite) {
@@ -320,6 +332,7 @@ export const updateUserGroup = async (
 		toolCallDensityPolicy?: ToolCallDensityPolicy;
 		databaseAccess?: DatabaseContextAccess;
 		docsAccess?: DocsContextAccess;
+		filesAccess?: FilesContextAccess;
 		ssoMappings?: UserGroupSsoMappings;
 		rowPolicies?: UserGroupRowPolicies;
 		rowPoliciesRegistry?: ProjectRowSecurity;
@@ -357,12 +370,13 @@ export const updateUserGroup = async (
 			data.featureGrants,
 			data.toolCallDensityPolicy ?? currentConfig.toolCallDensity,
 		),
-		...(data.databaseAccess === undefined && data.docsAccess === undefined
+		...(data.databaseAccess === undefined && data.docsAccess === undefined && data.filesAccess === undefined
 			? {}
 			: {
 					contextGrants: serializeUserGroupContextAccess(
 						data.databaseAccess ?? currentContext.databaseAccess,
 						data.docsAccess ?? currentContext.docsAccess,
+						data.filesAccess ?? currentContext.filesAccess,
 					),
 				}),
 		...(serializedSsoMappings === undefined ? {} : { ssoMappings: serializedSsoMappings }),
@@ -593,13 +607,14 @@ function createUserGroupValues(
 	docsAccess: DocsContextAccess,
 	ssoMappings?: UserGroupSsoMappings,
 	rowPolicies: UserGroupRowPolicies = EMPTY_USER_GROUP_ROW_POLICIES,
+	filesAccess: FilesContextAccess = EMPTY_FILES_CONTEXT_ACCESS,
 ): NewUserGroup {
 	const filteredRowPolicies = filterUserGroupRowPoliciesByDatabaseContext(rowPolicies, databaseAccess);
 	return {
 		projectId,
 		name,
 		featureGrants: serializeUserGroupConfig(featureGrants, toolCallDensityPolicy),
-		contextGrants: serializeUserGroupContextAccess(databaseAccess, docsAccess),
+		contextGrants: serializeUserGroupContextAccess(databaseAccess, docsAccess, filesAccess),
 		ssoMappings: serializeUserGroupSsoMappings(ssoMappings),
 		rowPolicies: serializeUserGroupRowPolicies(filteredRowPolicies),
 		isDefault: false,
@@ -733,6 +748,7 @@ function normalizeUserGroup(group: DBUserGroup): UserGroup {
 		toolCallDensityPolicy: config.toolCallDensity,
 		databaseAccess: contextAccess.databaseAccess,
 		docsAccess: contextAccess.docsAccess,
+		filesAccess: contextAccess.filesAccess,
 		ssoMappings: parseStoredUserGroupSsoMappings(group.ssoMappings),
 		rowPolicies: parseStoredUserGroupRowPolicies(group.rowPolicies),
 	};

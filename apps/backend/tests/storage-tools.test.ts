@@ -4,7 +4,7 @@ import path from 'node:path';
 import type { UserRulesGroupAccess } from '@nao/shared/rules-template';
 import type { Tool } from 'ai';
 import fs from 'fs/promises';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import grepTool from '../src/agents/tools/grep';
 import listTool from '../src/agents/tools/list';
@@ -14,14 +14,21 @@ import writeTool from '../src/agents/tools/write';
 import { __reloadEnvForTesting } from '../src/env';
 import type { WarehouseTableAccess } from '../src/services/context-access';
 import { __resetStorageForTesting } from '../src/services/storage';
-import type { ResolvedDocsContextAccess } from '../src/services/user-group-context-access.service';
+import type {
+	ResolvedDocsContextAccess,
+	ResolvedFilesContextAccess,
+} from '../src/services/user-group-context-access.service';
 import type { ToolContext } from '../src/types/tools';
+
+// The tools reach the database only for the /stories mount, which stays disabled in this suite.
+vi.mock('../src/db/db', () => ({ db: {} }));
 
 let storageRoot: string;
 let projectFolder: string;
 let originalEnv: typeof process.env;
 let warehouseTableAccess: WarehouseTableAccess;
 let docsContextAccess: ResolvedDocsContextAccess;
+let filesContextAccess: ResolvedFilesContextAccess;
 const userRulesGroupAccess: UserRulesGroupAccess = { enforced: false };
 
 const context = () =>
@@ -32,6 +39,7 @@ const context = () =>
 		warehouseTableAccess,
 		warehouseRowSecurity: { enforced: false },
 		docsContextAccess,
+		filesContextAccess,
 		userGroupFeatures: [],
 		userRulesGroupAccess,
 	}) as unknown as ToolContext;
@@ -42,6 +50,7 @@ beforeEach(async () => {
 	projectFolder = await fs.mkdtemp(path.join(os.tmpdir(), 'nao-project-tools-'));
 	warehouseTableAccess = { enforced: false };
 	docsContextAccess = { enforced: false };
+	filesContextAccess = { enforced: false };
 
 	useBackend('local');
 });
@@ -304,6 +313,18 @@ describe('search', () => {
 			files: [{ path: '/alias.md', dir: '/', size: '6' }],
 		});
 	});
+
+	it('omits a symlinked project file when project files are restricted', async () => {
+		const target = path.join(projectFolder, 'target.md');
+		await fs.writeFile(target, 'target');
+		await fs.symlink(target, path.join(projectFolder, 'alias.md'));
+		filesContextAccess = {
+			enforced: true,
+			access: { mode: 'restricted', grants: [{ kind: 'file', path: 'alias.md' }] },
+		};
+
+		expect(await run(searchTool, { pattern: 'alias.md' })).toEqual({ _version: '1', files: [] });
+	});
 });
 
 describe('grep', () => {
@@ -486,6 +507,7 @@ function readStorageFile(relativePath: string): Promise<string> {
 }
 
 function useBackend(backend: 'none' | 'local' | 's3'): void {
+	process.env.BETA_CUSTOM_STORIES_ENABLED = 'false';
 	process.env.NAO_STORAGE_BACKEND = backend;
 	process.env.NAO_STORAGE_LOCAL_PATH = storageRoot;
 	process.env.NAO_STORAGE_S3_BUCKET = 'test-bucket';

@@ -37,7 +37,7 @@ export const NOTIFICATION_CATEGORY_LABELS: Record<NotificationCategory, string> 
 };
 
 export const NOTIFICATION_CATEGORY_DESCRIPTIONS: Record<NotificationCategory, string> = {
-	budget: 'Alerts when a provider budget limit is reached.',
+	budget: 'Alerts when a provider or member budget limit is reached.',
 	feedback: 'Alerts when users leave positive or negative feedback.',
 	story_refresh: 'Results of your story refreshes.',
 	shared: 'When someone shares a story or chat with you.',
@@ -45,6 +45,8 @@ export const NOTIFICATION_CATEGORY_DESCRIPTIONS: Record<NotificationCategory, st
 };
 
 export type SharedItemLabel = 'story' | 'chat';
+
+export type ShareSource = { type: 'chat'; shareId: string } | { type: 'story'; storyId: string };
 
 export type FeedbackNotificationPayload = {
 	kind: 'feedback';
@@ -77,8 +79,6 @@ export type StorySubscriptionNotificationPayload = {
 	storyId: string;
 	storyTitle: string;
 	ownerName: string;
-	/** Share id used to render the live story (charts, tables, maps) as a preview in the notification card. */
-	shareId: string | null;
 };
 
 export const DEFAULT_PYTHON_EXECUTION_DURATION_SECS = 30;
@@ -158,6 +158,7 @@ export const LLM_PROVIDERS = [
 	'qwen',
 	'minimax',
 	'moonshot',
+	'meta',
 	'openaiCompatible',
 ] as const;
 
@@ -175,6 +176,7 @@ export const providerLabels: Record<LlmProviderKind, string> = {
 	qwen: 'Qwen',
 	minimax: 'MiniMax',
 	moonshot: 'Moonshot',
+	meta: 'Meta',
 	openaiCompatible: 'OpenAI Compatible',
 };
 
@@ -257,6 +259,7 @@ export type FileTreeEntry = {
 	path: string;
 	type: 'file' | 'directory';
 	children?: FileTreeEntry[];
+	readOnly?: boolean;
 };
 
 export type ContextGitUnavailableReason =
@@ -345,6 +348,11 @@ export const MAX_BUDGET_LIMIT_USD = 200_000;
 export const BUDGET_PERIODS = ['day', 'week', 'month'] as const;
 export type BudgetPeriod = (typeof BUDGET_PERIODS)[number];
 
+export const MEMBER_BUDGET_PERIODS = ['week', 'month', 'year'] as const;
+export type MemberBudgetPeriod = (typeof MEMBER_BUDGET_PERIODS)[number];
+
+export type CalendarPeriod = BudgetPeriod | MemberBudgetPeriod;
+
 export const SHARE_VISIBILITY = ['project', 'specific'] as const;
 export type Visibility = (typeof SHARE_VISIBILITY)[number];
 
@@ -360,6 +368,15 @@ export type FolderVisibility = (typeof FOLDER_VISIBILITY)[number];
 
 export const FOLDER_SYSTEM_TYPE = ['private_folder', 'shared_with_me'] as const;
 export type FolderSystemType = (typeof FOLDER_SYSTEM_TYPE)[number];
+
+export const STORY_ACTIONS = ['create', 'update', 'replace', 'publish'] as const;
+export type StoryAction = (typeof STORY_ACTIONS)[number];
+
+export const STORY_SOURCES = ['assistant', 'user'] as const;
+export type StorySource = (typeof STORY_SOURCES)[number];
+
+export const STORY_FORMATS = ['classic', 'custom'] as const;
+export type StoryFormat = (typeof STORY_FORMATS)[number];
 
 export type ProjectChatReplayFacets<R extends string = string> = {
 	userNames: string[];
@@ -420,6 +437,13 @@ export interface CitationData {
 	end: number;
 	text: string;
 	storySlug?: string;
+	block?: StoryBlockReference;
+}
+
+export interface StoryBlockReference {
+	kind: string;
+	title?: string;
+	queryId?: string;
 }
 
 export type MessageBubble = { role: 'user' | 'assistant'; charCount: number };

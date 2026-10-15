@@ -2,13 +2,14 @@ import { FOLDER_SYSTEM_TYPE } from '@nao/shared/types';
 import type { inferRouterOutputs } from '@trpc/server';
 
 import type { TrpcRouter } from '@nao/backend/trpc';
-import type { StorySharingInfo, StorySummary, SummarySegment } from '@nao/shared/types';
+import type { StoryFormat, StorySharingInfo, StorySummary, SummarySegment } from '@nao/shared/types';
 
 type RouterOutputs = inferRouterOutputs<TrpcRouter>;
 
 export type SortField = 'name' | 'owner' | 'updated';
 export type SortDirection = 'asc' | 'desc';
 export type SortState = { field: SortField; direction: SortDirection };
+export type StoriesScope = 'all' | 'certified';
 
 export const STORIES_DISPLAY_KEY = 'stories-display-mode';
 export const STORIES_SORT_KEY = 'stories-sort';
@@ -34,7 +35,6 @@ export function writeStoredSort(sort: SortState): void {
 }
 
 export type StoryItem = {
-	id: string;
 	storyId: string;
 	title: string;
 	createdAt: Date;
@@ -44,18 +44,17 @@ export type StoryItem = {
 	chatId?: string;
 	storySlug?: string;
 	summary: StorySummary;
+	format: StoryFormat;
 	isLive: boolean;
+	isCertified: boolean;
+	certifiedByName: string | null;
 	isPinned: boolean;
 	isFavorited: boolean;
 	sharing: StorySharingInfo | null;
-	shareId?: string;
-	sharedStoryId?: string;
+	isShared: boolean;
 	folderId: string | null;
 	isInPrivateContext: boolean;
-	link:
-		| { to: '/stories/preview/$chatId/$storySlug'; params: { chatId: string; storySlug: string } }
-		| { to: '/stories/shared/$shareId'; params: { shareId: string } }
-		| { to: '/stories/standalone/$storyId'; params: { storyId: string } };
+	link: { to: '/stories/$storyId'; params: { storyId: string } };
 };
 
 export type FolderItem = RouterOutputs['storyFolder']['listTree'][number];
@@ -130,11 +129,9 @@ export function buildStoryItems({
 	const ownItems: StoryItem[] = userStories.map((story) => {
 		const chatId = story.chatId!;
 		const sharedEntry = sharesByStoryId.get(story.id);
-		const shareId = sharedEntry?.id;
 		const folderId = folderItemMap.get(story.id) ?? null;
 		const isFavorited = favoriteSet.has(story.id);
 		return {
-			id: `${chatId}-${story.storySlug}`,
 			storyId: story.id,
 			title: story.title,
 			createdAt: new Date(story.createdAt),
@@ -144,20 +141,17 @@ export function buildStoryItems({
 			chatId,
 			storySlug: story.storySlug,
 			summary: story.summary,
+			format: story.format,
 			isLive: story.isLive,
+			isCertified: story.certifiedAt !== null,
+			certifiedByName: story.certifiedByName,
 			isPinned: sharedEntry?.isPinned ?? false,
 			isFavorited,
 			sharing: story.sharing,
-			shareId,
-			sharedStoryId: shareId,
+			isShared: sharedEntry !== undefined,
 			folderId,
 			isInPrivateContext: isPrivateContext(folderId, folders),
-			link: shareId
-				? { to: '/stories/shared/$shareId', params: { shareId } }
-				: {
-						to: '/stories/preview/$chatId/$storySlug',
-						params: { chatId, storySlug: story.storySlug },
-					},
+			link: storyLink(story.id),
 		};
 	});
 
@@ -165,7 +159,6 @@ export function buildStoryItems({
 		const folderId = folderItemMap.get(story.id) ?? null;
 		const isFavorited = favoriteSet.has(story.id);
 		return {
-			id: story.id,
 			storyId: story.id,
 			title: story.title,
 			createdAt: new Date(story.createdAt),
@@ -174,13 +167,17 @@ export function buildStoryItems({
 			kind: 'own-standalone',
 			storySlug: story.storySlug,
 			summary: story.summary,
+			format: story.format,
 			isLive: story.isLive,
+			isCertified: story.certifiedAt !== null,
+			certifiedByName: story.certifiedByName,
 			isPinned: false,
 			isFavorited,
 			sharing: null,
+			isShared: false,
 			folderId,
 			isInPrivateContext: isPrivateContext(folderId, folders),
-			link: { to: '/stories/standalone/$storyId', params: { storyId: story.id } },
+			link: storyLink(story.id),
 		};
 	});
 
@@ -190,7 +187,6 @@ export function buildStoryItems({
 			const folderId = folderItemMap.get(story.storyId) ?? null;
 			const isFavorited = favoriteSet.has(story.storyId);
 			return {
-				id: story.id,
 				storyId: story.storyId,
 				title: story.title,
 				createdAt: new Date(story.createdAt),
@@ -198,27 +194,31 @@ export function buildStoryItems({
 				author: story.authorName,
 				kind: story.visibility === 'specific' ? 'shared-with-me' : ('shared-project' as const),
 				summary: story.summary,
+				format: story.format,
 				isLive: story.isLive,
+				isCertified: story.certifiedAt !== null,
+				certifiedByName: story.certifiedByName,
 				isPinned: story.isPinned,
 				isFavorited,
 				sharing: story.sharing,
-				sharedStoryId: story.id,
+				isShared: true,
 				folderId,
 				isInPrivateContext: false,
-				link: { to: '/stories/shared/$shareId', params: { shareId: story.id } },
+				link: storyLink(story.storyId),
 			};
 		});
 
 	return [...ownItems, ...standaloneItems, ...sharedItems];
 }
 
-export function filterStories(items: StoryItem[], query: string): StoryItem[] {
+export function filterStories(items: StoryItem[], query: string, scope: StoriesScope = 'all'): StoryItem[] {
+	const scopedItems = scope === 'certified' ? items.filter((item) => item.isCertified) : items;
 	if (!query.trim()) {
-		return items;
+		return scopedItems;
 	}
 
 	const lowerQuery = query.toLowerCase();
-	return items.filter(
+	return scopedItems.filter(
 		(item) =>
 			matchesStoryId(item, query) ||
 			item.title.toLowerCase().includes(lowerQuery) ||
@@ -232,7 +232,7 @@ export function matchesStoryId(item: StoryItem, query: string): boolean {
 	if (!normalizedQuery) {
 		return false;
 	}
-	return [item.storyId, item.sharedStoryId, item.chatId].some((id) => id?.toLowerCase() === normalizedQuery);
+	return [item.storyId, item.chatId].some((id) => id?.toLowerCase() === normalizedQuery);
 }
 
 export function buildCurrentLevelEntries({
@@ -243,6 +243,7 @@ export function buildCurrentLevelEntries({
 	currentUserName,
 	favoriteFolderIds,
 	searchQuery = '',
+	scope = 'all',
 }: {
 	items: StoryItem[];
 	folders: FolderItem[];
@@ -251,10 +252,15 @@ export function buildCurrentLevelEntries({
 	currentUserName: string;
 	favoriteFolderIds?: string[];
 	searchQuery?: string;
+	scope?: StoriesScope;
 }): { pinned: StoryItem[]; favorites: FavoriteEntry[]; entries: ExplorerEntry[] } {
+	if (scope === 'certified') {
+		return buildCertifiedEntries(items, sort, currentUserName);
+	}
+
 	const favoriteFolderSet = new Set<string>(favoriteFolderIds ?? []);
 
-	const pinned = items.filter((i) => i.isPinned);
+	const pinned = items.filter((i) => i.isPinned).sort(compareCertifiedFirst);
 
 	const favoriteStories: FavoriteEntry[] = items
 		.filter((i) => !i.isPinned && i.isFavorited)
@@ -265,7 +271,9 @@ export function buildCurrentLevelEntries({
 		.map((folder) => ({ kind: 'folder' as const, folder, favoritedAt: folder.createdAt }));
 
 	const favorites = [...favoriteStories, ...favoriteFolders].sort(
-		(a, b) => b.favoritedAt.getTime() - a.favoritedAt.getTime(),
+		(a, b) =>
+			Number(isCertifiedEntry(b)) - Number(isCertifiedEntry(a)) ||
+			b.favoritedAt.getTime() - a.favoritedAt.getTime(),
 	);
 
 	const inSharedWithMe = currentFolderId === '__shared_with_me__';
@@ -290,6 +298,25 @@ export function buildCurrentLevelEntries({
 	return { pinned, favorites, entries };
 }
 
+/**
+ * The certified scope is a flat view: every certified story, regardless of folder.
+ */
+function buildCertifiedEntries(
+	items: StoryItem[],
+	sort: SortState,
+	currentUserName: string,
+): { pinned: StoryItem[]; favorites: FavoriteEntry[]; entries: ExplorerEntry[] } {
+	const entries: ExplorerEntry[] = items
+		.filter((item) => item.isCertified)
+		.map((story): ExplorerEntry => ({ kind: 'story', story }));
+	entries.sort(compareEntries(sort, currentUserName));
+	return { pinned: [], favorites: [], entries };
+}
+
+function storyLink(storyId: string): StoryItem['link'] {
+	return { to: '/stories/$storyId', params: { storyId } };
+}
+
 function isAtCurrentLevel(item: StoryItem, currentFolderId: string | null): boolean {
 	if (currentFolderId === '__shared_with_me__') {
 		return item.kind === 'shared-with-me';
@@ -301,8 +328,21 @@ function systemFolderRank(folder: FolderItem): number {
 	return folder.systemType == null ? 99 : FOLDER_SYSTEM_TYPE.indexOf(folder.systemType);
 }
 
+function compareCertifiedFirst(a: StoryItem, b: StoryItem): number {
+	return Number(b.isCertified) - Number(a.isCertified);
+}
+
+function isCertifiedEntry(entry: ExplorerEntry): boolean {
+	return entry.kind === 'story' && entry.story.isCertified;
+}
+
 function compareEntries(sort: SortState, currentUserName: string): (a: ExplorerEntry, b: ExplorerEntry) => number {
 	return (a, b) => {
+		const certifiedCmp = Number(isCertifiedEntry(b)) - Number(isCertifiedEntry(a));
+		if (certifiedCmp !== 0) {
+			return certifiedCmp;
+		}
+
 		const aVal = getSortValue(a, sort.field, currentUserName);
 		const bVal = getSortValue(b, sort.field, currentUserName);
 		const mul = sort.direction === 'asc' ? 1 : -1;

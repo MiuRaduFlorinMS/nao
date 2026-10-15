@@ -34,14 +34,17 @@ import { llmProviderSchema } from '../types/llm';
 import { getProjectAvailableModels } from '../utils/llm';
 import { logger } from '../utils/logger';
 import { extractConfiguredRepos } from '../utils/nao-config';
-import { contextAdminProtectedProcedure } from './trpc';
+import { cloudBillingContextAdminProcedure, contextAdminProtectedProcedure } from './trpc';
 
 const MAX_CUSTOM_SYSTEM_PROMPT_INSTRUCTIONS_LENGTH = 4000;
 
 const recommendationsProcedure = contextAdminProtectedProcedure.use(async ({ next }) => {
-	if (!env.BETA_CONTEXT_RECOMMENDATIONS_ENABLED) {
-		throw new TRPCError({ code: 'FORBIDDEN', message: 'Context recommendations are disabled on this instance.' });
-	}
+	assertContextRecommendationsEnabled();
+	return next();
+});
+
+const recommendationMutationProcedure = cloudBillingContextAdminProcedure.use(async ({ next }) => {
+	assertContextRecommendationsEnabled();
 	return next();
 });
 
@@ -81,12 +84,15 @@ export const contextRecommendationRoutes = {
 		crQueries.getLatestSuccessfulRun(ctx.project.id),
 	),
 
-	run: recommendationsProcedure.mutation(async ({ ctx }) => {
+	run: recommendationMutationProcedure.mutation(async ({ ctx }) => {
 		const latestRun = await crQueries.getLatestRun(ctx.project.id);
 		if (latestRun?.status === 'running') {
 			throw new TRPCError({ code: 'CONFLICT', message: 'A recommendations run is already in progress.' });
 		}
-		void runContextRecommendations(ctx.project.id, { trigger: 'manual' }).catch((err) => {
+		void runContextRecommendations(ctx.project.id, {
+			billingAccessVerifiedProjectId: ctx.project.id,
+			trigger: 'manual',
+		}).catch((err) => {
 			logger.error(`Manual context recommendations run failed: ${String(err)}`, { source: 'agent' });
 		});
 		return { started: true };
@@ -117,7 +123,7 @@ export const contextRecommendationRoutes = {
 		return crQueries.getConfig(ctx.project.id);
 	}),
 
-	setConfig: recommendationsProcedure
+	setConfig: recommendationMutationProcedure
 		.input(
 			z.object({
 				modelProvider: llmProviderSchema.optional(),
@@ -159,7 +165,7 @@ export const contextRecommendationRoutes = {
 		return extractConfiguredRepos(ctx.project.path);
 	}),
 
-	setRepo: recommendationsProcedure
+	setRepo: recommendationMutationProcedure
 		.input(
 			z.object({
 				repoFullName: z
@@ -176,7 +182,7 @@ export const contextRecommendationRoutes = {
 			});
 		}),
 
-	setStatus: recommendationsProcedure
+	setStatus: recommendationMutationProcedure
 		.input(
 			z.object({
 				id: z.string(),
@@ -241,15 +247,17 @@ export const contextRecommendationRoutes = {
 		return null;
 	}),
 
-	createPullRequest: recommendationsProcedure.input(z.object({ id: z.string() })).mutation(async ({ ctx, input }) => {
-		try {
-			return await createRecommendationPullRequest(ctx.project.id, input.id, ctx.user.id);
-		} catch (err) {
-			throw toPullRequestTrpcError(err);
-		}
-	}),
+	createPullRequest: recommendationMutationProcedure
+		.input(z.object({ id: z.string() }))
+		.mutation(async ({ ctx, input }) => {
+			try {
+				return await createRecommendationPullRequest(ctx.project.id, input.id, ctx.user.id);
+			} catch (err) {
+				throw toPullRequestTrpcError(err);
+			}
+		}),
 
-	createBatchPullRequest: recommendationsProcedure
+	createBatchPullRequest: recommendationMutationProcedure
 		.input(z.object({ ids: z.array(z.string()).min(1).max(20) }))
 		.mutation(async ({ ctx, input }) => {
 			try {
@@ -280,6 +288,12 @@ export const contextRecommendationRoutes = {
 		.input(z.object({ chatIds: z.array(z.string()).max(MAX_TRIGGER_CHATS) }))
 		.query(async ({ ctx, input }) => crQueries.getRecommendationChatMetadata(ctx.project.id, input.chatIds)),
 };
+
+function assertContextRecommendationsEnabled(): void {
+	if (!env.BETA_CONTEXT_RECOMMENDATIONS_ENABLED) {
+		throw new TRPCError({ code: 'FORBIDDEN', message: 'Context recommendations are disabled on this instance.' });
+	}
+}
 
 async function setContextRecommendationModel(projectId: string, selection: LlmSelectedModel): Promise<void> {
 	const settings = await projectQueries.getDefaultModelSettings(projectId);

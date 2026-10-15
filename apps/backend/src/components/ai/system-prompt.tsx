@@ -15,6 +15,7 @@ import type { ConfiguredDatabase, ContextPresence } from '../../utils/nao-config
 import { groupBy } from '../../utils/utils';
 import { getDialectSqlQueryRules, getDialectToolCallRules } from './dialect-rules';
 import { NaoContextStructure } from './nao-context-structure';
+import { storyKitGuideItems } from './story-kit-guide';
 
 type Connection = {
 	type: string;
@@ -40,7 +41,6 @@ type SystemPromptProps = {
 	repoNames?: string[];
 	contextPresence?: ContextPresence;
 	timezone?: string;
-	testMode?: boolean;
 	/** Names of the tools in the run's tool set — rules for surface-dependent tools (e.g. display_map) are only emitted when the tool is present. Omit to include every rule. */
 	toolNames?: string[];
 	options?: SystemPromptOptions;
@@ -48,8 +48,12 @@ type SystemPromptProps = {
 
 /** What the instance the run executes on can do, when a rule depends on it. */
 type SystemPromptOptions = {
+	/** False when permanent storage is turned off, so `/home` does not exist even though `write` may. */
+	savedFilesEnabled?: boolean;
 	/** False when the storage backend has no real filesystem (`s3`), so grep cannot look inside saved files. */
 	canGrepSavedFiles?: boolean;
+	/** True when the instance exposes source-based custom stories under `/stories`. */
+	customStoriesEnabled?: boolean;
 };
 
 export const MEMORY_TOKEN_LIMIT = 1000;
@@ -69,11 +73,10 @@ export function SystemPrompt({
 	repoNames = [],
 	contextPresence,
 	timezone,
-	testMode,
 	toolNames,
 	options = {},
 }: SystemPromptProps) {
-	const { canGrepSavedFiles = true } = options;
+	const { canGrepSavedFiles = true, savedFilesEnabled = true, customStoriesEnabled = false } = options;
 	const hasTool = (name: string) => !toolNames || toolNames.includes(name);
 	const queryToolLabel = hasTool('execute_semantic_query') ? 'execute_sql or execute_semantic_query' : 'execute_sql';
 	const visibleMemories = getMemoriesInTokenRange(memories, MEMORY_TOKEN_LIMIT);
@@ -142,28 +145,47 @@ export function SystemPrompt({
 								: 'If you can execute a SQL query, use the execute_sql tool for it.'}
 						</ListItem>
 					),
-					!testMode && (
+					...(hasTool('clarification')
+						? [
+								<ListItem>
+									Use the <Bold>clarification</Bold> tool when the user's request is genuinely
+									ambiguous and proceeding would likely produce the wrong result (e.g. multiple
+									plausible tables, unclear time range, undefined metric). If you need to ask another
+									clarifying question after the user answers, call the <Bold>clarification</Bold> tool
+									again instead of asking in plain text, bullet lists, or examples.
+								</ListItem>,
+							]
+						: []),
+					hasTool('suggest_follow_ups') && (
 						<ListItem>
-							Use the <Bold>clarification</Bold> tool when the user's request is genuinely ambiguous and
-							proceeding would likely produce the wrong result (e.g. multiple plausible tables, unclear
-							time range, undefined metric). If you need to ask another clarifying question after the user
-							answers, call the <Bold>clarification</Bold> tool again instead of asking in plain text,
-							bullet lists, or examples.
+							For every analytical response based on business data—including trends, comparisons,
+							anomalies, causes, breakdowns, or analysis across multiple metrics, customers, or time
+							periods—call <Bold>suggest_follow_ups</Bold> exactly once. A complete answer is not a reason
+							to omit it: suggestions should extend the analysis, not complete the answer. Skip it only
+							for simple one-fact answers, acknowledgements, and clarification requests. The turn must
+							also contain a complete visible answer; the answer and tool call may occur in either order.
+							Call it only after all data gathering is complete, as the sole and final tool call, never in
+							parallel with another tool. The interface presents the suggestions separately, so do not
+							announce them in the visible answer.
 						</ListItem>
 					),
 					...dialectToolCallRules,
 				]}
 			</List>
-			{hasTool('write') && (
+			{hasTool('write') && savedFilesEnabled && (
 				<PermanentStorageBlock
 					canGrepSavedFiles={canGrepSavedFiles}
 					canRunSandbox={hasTool('execute_sandboxed_code')}
 					canExecuteSql={hasTool('execute_sql')}
+					canReplace={hasTool('str_replace')}
 				/>
+			)}
+			{customStoriesEnabled && hasTool('story') && hasTool('write') && (
+				<CustomStoriesBlock canReplace={hasTool('str_replace')} />
 			)}
 			{hasTool('execute_sql') && (
 				<LocalDatabaseBlock
-					canSaveResults={hasTool('write')}
+					canSaveResults={hasTool('write') && savedFilesEnabled}
 					hasSemanticResults={hasTool('execute_semantic_query')}
 					warehouseSqlEnabled={semanticLayerMode !== 'exclusive'}
 				/>
@@ -407,10 +429,12 @@ function PermanentStorageBlock({
 	canGrepSavedFiles,
 	canRunSandbox,
 	canExecuteSql,
+	canReplace,
 }: {
 	canGrepSavedFiles: boolean;
 	canRunSandbox: boolean;
 	canExecuteSql: boolean;
+	canReplace: boolean;
 }) {
 	return (
 		<Block>
@@ -436,8 +460,14 @@ function PermanentStorageBlock({
 				</ListItem>
 				<ListItem>
 					<Bold>/home</Bold> is the only writable place: use <Bold>write</Bold> when the user asks to keep,
-					export or update something, or when a result is clearly worth reusing later. Everything else in the
-					tree is read-only. Do not save intermediate work nobody asked for.
+					export or update something, or when a result is clearly worth reusing later.{' '}
+					{canReplace && (
+						<>
+							To change part of a file that already exists, use <Bold>str_replace</Bold> with the exact
+							snippet rather than sending the whole file to <Bold>write</Bold> again.{' '}
+						</>
+					)}
+					Everything else in the tree is read-only. Do not save intermediate work nobody asked for.
 					{canExecuteSql && (
 						<>
 							{' '}
@@ -488,6 +518,62 @@ function PermanentStorageBlock({
 					Never give the full path in plain text, users might get confused about it as it's not clickable
 					directly in the chat.
 				</ListItem>
+			</List>
+		</Block>
+	);
+}
+
+function CustomStoriesBlock({ canReplace }: { canReplace: boolean }) {
+	return (
+		<Block>
+			<Title level={2}>Custom Stories</Title>
+			<Span>
+				A story is either <Bold>classic</Bold> (markdown with chart/table blocks) or <Bold>custom</Bold>: a
+				React app under <Bold>/stories/&lt;id&gt;/</Bold>, edited with{' '}
+				{canReplace ? (
+					<>
+						<Bold>str_replace</Bold> (or <Bold>write</Bold> for a new file)
+					</>
+				) : (
+					<Bold>write</Bold>
+				)}{' '}
+				and made visible with <Bold>story</Bold> "publish". Pick the format before the first <Bold>story</Bold>{' '}
+				call; a request gets exactly one story, never a classic one alongside or as a draft of a custom one.
+			</Span>
+			<Span>Choose custom when any of these holds, even if the user never says "custom":</Span>
+			<List>
+				<ListItem>
+					They ask for a "custom story" or an "app" — "custom" names the format, not a tailored classic story.
+				</ListItem>
+				<ListItem>
+					The deliverable has its own shape: slides, deck, presentation, pitch, one-pager, infographic,
+					wallboard/TV screen, scrollytelling narrative. Classic tabs are not slides.
+				</ListItem>
+				<ListItem>
+					It needs interaction beyond reading: what-if sliders or inputs, calculator or simulator,
+					click-to-drill or cross-filtering between charts, toggles between metrics or views, a step-by-step
+					walkthrough.
+				</ListItem>
+				<ListItem>
+					It needs a visual the chart types lack (funnel, cohort heatmap, gauge, timeline, calendar, flow) or
+					a bespoke layout, or the user found a classic story too limited.
+				</ListItem>
+			</List>
+			<Span>
+				Otherwise — a report or dashboard of charts, tables and text, tabs and grids included — use classic.
+			</Span>
+			<List>
+				{[
+					<ListItem key='workflow'>
+						Run the queries first, then "create" with format "custom" and no files to get a starter app;
+						read it, replace every <Bold>REPLACE_ME</Bold> queryId with a real query id and every
+						placeholder title with one that fits the data, keep its page/grid layout. On build_errors
+						nothing was published: fix and publish again. "update"/"replace" do not apply; "delete_files"
+						removes draft files and "revert" resets the draft to a published version. Published versions are
+						readable, not writable, at /stories/&lt;id&gt;/@v&lt;N&gt;/&lt;path&gt;.
+					</ListItem>,
+					...storyKitGuideItems(),
+				]}
 			</List>
 		</Block>
 	);

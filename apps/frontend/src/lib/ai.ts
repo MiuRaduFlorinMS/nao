@@ -104,6 +104,11 @@ export const isReasoningPart = (part: UIMessagePart): part is ReasoningUIPart =>
 	return part.type === 'reasoning';
 };
 
+/** Claude returns the note it writes before a tool call as a reasoning part; the backend tags it so it counts as readable content. */
+export const isProgressUpdatePart = (part: UIMessagePart): boolean => {
+	return isReasoningPart(part) && part.providerMetadata?.anthropic?.progressUpdate === true;
+};
+
 export const isToolGroupPart = (part: GroupedMessagePart): part is ToolGroupPart => {
 	return part.type === 'tool-group';
 };
@@ -459,7 +464,7 @@ export const checkAssistantMessageHasContent = (message: UIMessage): boolean => 
 		(part) =>
 			part.type !== 'step-start' &&
 			part.type !== 'tool-suggest_follow_ups' &&
-			part.type !== 'reasoning' &&
+			(part.type !== 'reasoning' || isProgressUpdatePart(part)) &&
 			part.type !== 'data-newChat' &&
 			part.type !== 'data-newUserMessage',
 	);

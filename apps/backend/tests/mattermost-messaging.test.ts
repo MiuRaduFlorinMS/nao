@@ -1,7 +1,7 @@
 import { createMattermostAdapter } from 'chat-adapter-mattermost';
 import { describe, expect, it, vi } from 'vitest';
 
-import { generateChartImage } from '../src/components/generate-chart';
+import { renderChartToSvg } from '../src/components/generate-chart';
 import {
 	buildMattermostAnswerPatchBody,
 	cacheMattermostEmail,
@@ -32,6 +32,8 @@ import {
 } from '../src/services/mattermost-helpers';
 import {
 	createMattermostAnswerMessage,
+	escapeMarkdownText,
+	formatMessagingError,
 	getMessagingProviderWebhookUrl,
 	resolveMattermostCallbackBaseUrl,
 } from '../src/utils/messaging-provider';
@@ -45,6 +47,23 @@ vi.mock('../src/utils/logger', () => ({
 		debug: vi.fn(),
 	},
 }));
+
+describe('formatMessagingError', () => {
+	it.each([
+		[
+			'billing errors ending in punctuation',
+			new Error('Ask an organization admin to update billing.'),
+			'❌ An error occurred while processing your message. Ask an organization admin to update billing.',
+		],
+		[
+			'errors without terminal punctuation',
+			new Error('Unknown failure'),
+			'❌ An error occurred while processing your message. Unknown failure.',
+		],
+	])('%s', (_description, error, expected) => {
+		expect(formatMessagingError(error)).toBe(expected);
+	});
+});
 
 describe('validateMattermostConnection', () => {
 	it('accepts a valid Mattermost user response', async () => {
@@ -578,6 +597,23 @@ describe('Mattermost answer rendering', () => {
 		expect(message).not.toHaveProperty('card');
 		expect(message).not.toHaveProperty('attachments');
 	});
+
+	it('labels the link with the white-label app name', () => {
+		expect(createMattermostAnswerMessage('Answer text', 'https://nao.example/chat-1', 'Fibi')).toEqual({
+			markdown: 'Answer text\n\n**[Open in Fibi](https://nao.example/chat-1)**',
+		});
+	});
+
+	it('escapes markdown punctuation in the app name so it cannot break the link', () => {
+		const { markdown } = createMattermostAnswerMessage(
+			'',
+			'https://nao.example/chat-1',
+			'yolo](https://evil.example)',
+		);
+
+		expect(markdown).toBe('**[Open in yolo\\]\\(https://evil.example\\)](https://nao.example/chat-1)**');
+		expect(escapeMarkdownText('Data_Hub *beta*')).toBe('Data\\_Hub \\*beta\\*');
+	});
 });
 
 describe('createMattermostMarkdownTable', () => {
@@ -637,7 +673,7 @@ describe('createMattermostMarkdownTable', () => {
 
 describe('Mattermost chart images', () => {
 	it('renders date-axis charts from persisted ISO date strings', () => {
-		const image = generateChartImage({
+		const svg = renderChartToSvg({
 			config: {
 				chart_type: 'line',
 				x_axis_key: 'month',
@@ -658,7 +694,8 @@ describe('Mattermost chart images', () => {
 			],
 		});
 
-		expect(image.byteLength).toBeGreaterThan(0);
+		expect(svg).toContain('<svg');
+		expect(svg).toContain('Monthly Revenue Trend');
 	});
 });
 

@@ -27,6 +27,21 @@ export async function storyRefreshHandler(payload: StoryRefreshJobPayload, _job?
 	await runScheduledStoryRefresh(storyId);
 }
 
+export async function resolveStoryRefreshProjectId(payload: StoryRefreshJobPayload): Promise<string> {
+	if (!payload.storyId) {
+		throw new Error('storyId is required.');
+	}
+	const story = await storyQueries.getStoryById(payload.storyId);
+	if (!story) {
+		throw new Error(`Story not found: ${payload.storyId}`);
+	}
+	const projectId = story.projectId ?? (await storyQueries.getStoryProjectId(story.id));
+	if (!projectId) {
+		throw new Error(`Story ${payload.storyId} is missing a project; cannot schedule refresh.`);
+	}
+	return projectId;
+}
+
 /**
  * Runs a scheduled refresh for a live story and records the outcome as an
  * `activity` row so it surfaces in the activity feed.
@@ -54,7 +69,6 @@ async function runLockedScheduledStoryRefresh(storyId: string): Promise<void> {
 	if (!projectId || !userId) {
 		throw new Error(`Story ${storyId} is missing project or user ownership; cannot schedule refresh.`);
 	}
-
 	const activity = await activityQueries.startStoryRefreshActivity({
 		projectId,
 		userId,
@@ -64,7 +78,9 @@ async function runLockedScheduledStoryRefresh(storyId: string): Promise<void> {
 	});
 
 	try {
-		const { queryData } = await refreshStoryData(story.chatId, story.slug);
+		const { queryData } = await refreshStoryData(story.chatId, story.slug, {
+			billingAccessVerifiedProjectId: projectId,
+		});
 		const queriesRefreshed = Object.keys(queryData).length;
 		await activityQueries.completeActivity(activity.id, { queriesRefreshed });
 		await notifyStoryRefreshed({

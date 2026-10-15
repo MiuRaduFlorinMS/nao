@@ -1,7 +1,7 @@
 import { Download, FileCode, FileText, Loader2 } from 'lucide-react';
 import { useState } from 'react';
 
-import type { DownloadFormat } from '@nao/shared/types';
+import type { DownloadFormat, ShareSource } from '@nao/shared/types';
 import {
 	DropdownMenuItem,
 	DropdownMenuSub,
@@ -10,31 +10,38 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { trpcClient } from '@/main';
 
+export interface StoryDownloadFile {
+	data: string;
+	filename: string;
+	mimeType: string;
+}
+
 export interface StoryDownloadOptions {
 	storyId?: string;
 	chatId?: string;
 	storySlug?: string;
-	shareId?: string;
-	shareType?: 'chat' | 'story';
+	shareSource?: ShareSource;
 	isOwner?: boolean;
 	versionNumber?: number;
+	/** Replaces the server-rendered export, e.g. a custom story downloads a snapshot of its rendered frame. */
+	onDownload?: (format: DownloadFormat) => Promise<StoryDownloadFile>;
 }
 
-export function canDownloadStory({ storyId, shareId, isOwner = true }: StoryDownloadOptions) {
-	return isOwner || !!shareId || !!storyId;
+export function canDownloadStory({ storyId, shareSource, isOwner = true, onDownload }: StoryDownloadOptions) {
+	return isOwner || !!shareSource || !!storyId || !!onDownload;
 }
 
 function useStoryDownload({
 	storyId,
 	chatId,
 	storySlug,
-	shareId,
-	shareType = 'story',
+	shareSource,
 	isOwner = true,
 	versionNumber,
+	onDownload,
 }: StoryDownloadOptions) {
 	const [isDownloading, setIsDownloading] = useState(false);
-	const canDownload = canDownloadStory({ storyId, shareId, isOwner });
+	const canDownload = canDownloadStory({ storyId, shareSource, isOwner, onDownload });
 
 	const handleDownload = async (format: DownloadFormat) => {
 		if (!canDownload) {
@@ -43,7 +50,9 @@ function useStoryDownload({
 		setIsDownloading(true);
 		try {
 			let result;
-			if (storyId) {
+			if (onDownload) {
+				result = await onDownload(format);
+			} else if (storyId) {
 				result = await trpcClient.story.downloadStandalone.query({ storyId, format });
 			} else if (isOwner) {
 				result = await trpcClient.story.download.query({
@@ -52,15 +61,19 @@ function useStoryDownload({
 					format,
 					versionNumber,
 				});
-			} else if (shareType === 'chat') {
+			} else if (shareSource?.type === 'chat') {
 				result = await trpcClient.sharedChat.downloadStory.query({
-					shareId: shareId!,
+					shareId: shareSource.shareId,
 					storySlug: storySlug!,
 					format,
 					versionNumber,
 				});
 			} else {
-				result = await trpcClient.storyShare.download.query({ shareId: shareId!, format, versionNumber });
+				result = await trpcClient.storyShare.download.query({
+					storyId: shareSource!.storyId,
+					format,
+					versionNumber,
+				});
 			}
 			const bytes = Uint8Array.from(atob(result.data), (c) => c.charCodeAt(0));
 			const blob = new Blob([bytes], { type: result.mimeType });

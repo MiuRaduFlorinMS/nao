@@ -1,7 +1,26 @@
 import { describe, expect, it } from 'vitest';
 
-import { areGroupedMessagePartsEqual } from './ai';
+import { areGroupedMessagePartsEqual, checkAssistantMessageHasContent, groupToolCalls } from './ai';
+import type { UIMessage, UIMessagePart } from '@nao/backend/chat';
 import type { GroupedMessagePart } from '@/types/ai';
+
+const PROGRESS_UPDATE = {
+	type: 'reasoning',
+	text: 'Found 99 orders, charting them next.',
+	state: 'done',
+	providerMetadata: { anthropic: { signature: 'sig', progressUpdate: true } },
+} as UIMessagePart;
+const HIDDEN_REASONING = {
+	type: 'reasoning',
+	text: '',
+	state: 'done',
+	providerMetadata: { anthropic: { signature: 'sig' } },
+} as UIMessagePart;
+const FOLLOW_UPS = {
+	type: 'tool-suggest_follow_ups',
+	toolCallId: 'call-2',
+	state: 'output-available',
+} as UIMessagePart;
 
 const createToolPart = (overrides: Record<string, unknown> = {}): GroupedMessagePart =>
 	({
@@ -127,5 +146,26 @@ describe('areGroupedMessagePartsEqual', () => {
 		} as GroupedMessagePart;
 
 		expect(areGroupedMessagePartsEqual(left, right)).toBe(false);
+	});
+});
+
+describe('progress updates', () => {
+	it('collapses a progress update into the tool group like any reasoning', () => {
+		const readPart = createToolPart({ type: 'tool-read', toolName: 'read' }) as UIMessagePart;
+		const grouped = groupToolCalls([HIDDEN_REASONING, PROGRESS_UPDATE, readPart, readPart]);
+
+		expect(grouped).toHaveLength(1);
+		expect(grouped[0]).toMatchObject({
+			type: 'tool-group',
+			parts: [PROGRESS_UPDATE, readPart, readPart],
+		});
+	});
+
+	it('counts a progress update as content, unlike hidden reasoning', () => {
+		const withUpdate = { role: 'assistant', parts: [HIDDEN_REASONING, PROGRESS_UPDATE, FOLLOW_UPS] } as UIMessage;
+		const withoutUpdate = { role: 'assistant', parts: [HIDDEN_REASONING, FOLLOW_UPS] } as UIMessage;
+
+		expect(checkAssistantMessageHasContent(withUpdate)).toBe(true);
+		expect(checkAssistantMessageHasContent(withoutUpdate)).toBe(false);
 	});
 });
