@@ -29,8 +29,8 @@ import {
 	renderMapImage,
 } from '../utils/messaging-provider';
 import { agentService } from './agent';
-import { posthog, PostHogEvent } from './posthog';
-
+import { getAppName } from './branding.service';
+import { assertProjectCloudBillingAccess } from './cloud-billing-access.service';
 const UPDATE_INTERVAL_MS = 200;
 
 class TelegramService {
@@ -107,10 +107,7 @@ class TelegramService {
 				return;
 			}
 			await feedbackQueries.upsertFeedback({ messageId, vote: 'up' });
-			const completion = this._lastCompletionCard.get(event.thread?.id || '');
-			if (completion) {
-				await completion.card.edit(createTelegramCompletionCard(completion.chatUrl, 'up'));
-			}
+			await this._updateCompletionCardVote(event.thread?.id || '', 'up');
 		});
 
 		this._bot.onAction('feedback_negative', async (event) => {
@@ -119,11 +116,17 @@ class TelegramService {
 				return;
 			}
 			await feedbackQueries.upsertFeedback({ messageId, vote: 'down' });
-			const completion = this._lastCompletionCard.get(event.thread?.id || '');
-			if (completion) {
-				await completion.card.edit(createTelegramCompletionCard(completion.chatUrl, 'down'));
-			}
+			await this._updateCompletionCardVote(event.thread?.id || '', 'down');
 		});
+	}
+
+	private async _updateCompletionCardVote(threadId: string, vote: 'up' | 'down'): Promise<void> {
+		const completion = this._lastCompletionCard.get(threadId);
+		if (!completion) {
+			return;
+		}
+		const appName = await getAppName();
+		await completion.card.edit(createTelegramCompletionCard(completion.chatUrl, { vote, appName }));
 	}
 
 	private async _handleWorkFlow(thread: Thread, userMessage: Message): Promise<void> {
@@ -144,7 +147,10 @@ class TelegramService {
 		};
 
 		try {
-			await this._validateUserAccess(ctx);
+			if (!(await this._validateUserAccess(ctx))) {
+				return;
+			}
+			await assertProjectCloudBillingAccess(this._projectId);
 			ctx.convMessage = await ctx.thread.post('✨ nao is answering...');
 			await this._saveOrUpdateUserMessage(ctx);
 
@@ -155,18 +161,18 @@ class TelegramService {
 
 			await this._handleStreamAgent(chat, ctx);
 		} catch (error) {
+			const errorMessage = formatMessagingError(error);
 			if (!ctx.convMessage) {
+				await ctx.thread.post(errorMessage);
 				return;
 			}
-			const errorMessage = formatMessagingError(error);
 			ctx.blocks = [createPlainTextBlock(errorMessage)];
 			await this._safeEdit(ctx.convMessage, Card({ children: ctx.blocks }));
 		}
 	}
 
-	private async _validateUserAccess(ctx: ConversationContext): Promise<void> {
-		await this._getUser(ctx);
-		await this._checkUserBelongsToProject(ctx);
+	private async _validateUserAccess(ctx: ConversationContext): Promise<boolean> {
+		return (await this._getUser(ctx)) && this._checkUserBelongsToProject(ctx);
 	}
 
 	private async _handleLoginCommand(thread: Thread, message: Message): Promise<void> {
@@ -198,7 +204,7 @@ class TelegramService {
 		return id ? String(id) : null;
 	}
 
-	private async _getUser(ctx: ConversationContext): Promise<void> {
+	private async _getUser(ctx: ConversationContext): Promise<boolean> {
 		const telegramId = this._getTelegramId(ctx.userMessage);
 		if (!telegramId) {
 			throw new Error('Could not retrieve user identity from Telegram');
@@ -209,26 +215,28 @@ class TelegramService {
 			await ctx.thread.post(
 				'👋 Welcome! Send `/login <your-code>` to link your account. Find your code in project settings.',
 			);
-			throw new Error('User not linked');
+			return false;
 		}
 		const user = await getUser({ email });
 
 		if (!user) {
 			this._userByTelegramId.delete(telegramId);
 			await ctx.thread.post(`❌ No account found for ${email}. Send \`/login\` again with the correct code.`);
-			throw new Error('User not found');
+			return false;
 		}
 		ctx.user = user;
+		return true;
 	}
 
-	private async _checkUserBelongsToProject(ctx: ConversationContext): Promise<void> {
+	private async _checkUserBelongsToProject(ctx: ConversationContext): Promise<boolean> {
 		const role = await projectQueries.getUserRoleInProject(this._projectId, ctx.user!.id);
 		if (role !== 'admin' && role !== 'user' && role !== 'context_admin') {
 			await ctx.thread.post(
 				"❌ You don't have permission to use nao in this project. Please contact an administrator.",
 			);
-			throw new Error('User does not have permission to access this project');
+			return false;
 		}
+		return true;
 	}
 
 	private async _saveOrUpdateUserMessage(ctx: ConversationContext): Promise<void> {
@@ -264,17 +272,9 @@ class TelegramService {
 		await stopCard.delete();
 		await this._lastCompletionCard.get(ctx.thread.id)?.card.delete();
 		const chatUrl = new URL(ctx.chatId, this._redirectUrl).toString();
-		const card = await ctx.thread.post(createTelegramCompletionCard(chatUrl));
+		const appName = await getAppName();
+		const card = await ctx.thread.post(createTelegramCompletionCard(chatUrl, { appName }));
 		this._lastCompletionCard.set(ctx.thread.id, { card, chatUrl });
-
-		posthog.capture(ctx.user!.id, PostHogEvent.MessageSent, {
-			project_id: this._projectId,
-			chat_id: ctx.chatId,
-			model_id: ctx.modelId,
-			is_new_chat: ctx.isNewChat,
-			source: 'telegram',
-			domain_host: new URL(this._redirectUrl).host,
-		});
 	}
 
 	private async _createAgentStream(
@@ -284,10 +284,14 @@ class TelegramService {
 		const agent = await agentService.create(
 			{ ...chat, userId: ctx.user!.id, projectId: this._projectId },
 			this._modelSelection,
-			{ supportsCustomCharts: false },
+			{ billingAccessVerifiedProjectId: this._projectId, supportsCustomCharts: false },
 		);
 		ctx.modelId = agent.getModelId();
-		return agent.stream(chat.messages, { provider: 'telegram', timezone: ctx.timezone });
+		return agent.stream(chat.messages, {
+			provider: 'telegram',
+			timezone: ctx.timezone,
+			tracking: { source: 'telegram', isNewChat: ctx.isNewChat, domainHost: new URL(this._redirectUrl).host },
+		});
 	}
 
 	private async _readStreamAndUpdateMessage(
@@ -469,8 +473,9 @@ class TelegramService {
 		}
 		try {
 			const chatUrl = new URL(ctx.chatId, this._redirectUrl).toString();
+			const appName = await getAppName();
 			ctx.textBlockIndex = -1;
-			ctx.blocks.push(...createTelegramMapLinkCard(part.input.title, chatUrl));
+			ctx.blocks.push(...createTelegramMapLinkCard(part.input.title, chatUrl, appName));
 			if (ctx.convMessage) {
 				await this._safeEdit(ctx.convMessage, Card({ children: ctx.blocks }));
 			}

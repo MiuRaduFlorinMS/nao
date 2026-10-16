@@ -11,6 +11,7 @@ import {
 	type ReasoningEffort,
 	safetyThresholdSchema,
 	type ServiceTier,
+	thinkingDisplaySchema,
 } from '../types/llm';
 
 /**
@@ -21,6 +22,7 @@ export const OPENAI_COMPATIBLE_BASE_URLS: Partial<Record<LlmProviderKind, string
 	qwen: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
 	minimax: 'https://api.minimax.io/v1',
 	moonshot: 'https://api.moonshot.ai/v1',
+	meta: 'https://api.meta.ai/v1',
 	requesty: 'https://router.requesty.ai/v1',
 };
 
@@ -38,6 +40,10 @@ const GEMINI_CUSTOM_EFFORTS: ReasoningEffort[] = ['off', 'low', 'high'];
 const OPENAI_5_6_EFFORTS: ReasoningEffort[] = ['off', 'low', 'medium', 'high', 'max'];
 /** Kimi K3 reasoning levels: the API accepts low/high/max only. */
 const MOONSHOT_EFFORTS: ReasoningEffort[] = ['off', 'low', 'high', 'max'];
+/** Muse Wonder and Muse Spark 1.3: the full minimal…max scale, `max` sitting above OpenAI's `xhigh`. */
+const META_EFFORTS: ReasoningEffort[] = ['off', 'minimal', 'low', 'medium', 'high', 'max'];
+/** Custom Muse models: `max` is rejected by the older and Contributor-mode variants. */
+const META_CUSTOM_EFFORTS: ReasoningEffort[] = ['off', 'minimal', 'low', 'medium', 'high'];
 
 export const EFFORT_TO_OPENAI: Record<ActiveEffort, string> = {
 	minimal: 'minimal',
@@ -81,6 +87,7 @@ const BEDROCK_TIERS: ServiceTier[] = ['default', 'reserved', 'priority', 'flex']
 const MINIMAX_TIERS: ServiceTier[] = ['standard', 'priority'];
 
 const ANTHROPIC_EXTRAS: ExtraParamKey[] = ['parallelToolCalls', 'sendReasoning', 'speed', 'inferenceGeo'];
+const ANTHROPIC_ADAPTIVE_EXTRAS: ExtraParamKey[] = [...ANTHROPIC_EXTRAS, 'thinkingDisplay'];
 /**
  * Claude on Vertex: `speed` (fast mode) and `inferenceGeo` are Anthropic-first-party request
  * fields that Vertex's endpoint rejects. `sendReasoning` is an SDK-side prompt transform and
@@ -108,7 +115,17 @@ const ANTHROPIC_ADAPTIVE: ModelCapabilities = {
 	maxOutputTokens: true,
 	effortOptions: CLAUDE_EFFORTS,
 	temperatureMax: 1,
-	extraParams: ANTHROPIC_EXTRAS,
+	extraParams: ANTHROPIC_ADAPTIVE_EXTRAS,
+};
+/** Claude 4.7/4.8: thinking is off by default and its text hidden; progress updates between tool calls are available on request. */
+const ANTHROPIC_HIDDEN_THINKING: ModelCapabilities = {
+	...ANTHROPIC_ADAPTIVE,
+	thinkingDisplay: 'updates',
+};
+/** Claude 5+: thinking is always on with hidden text, and the final prose before a tool call arrives as a progress update. */
+const ANTHROPIC_ALWAYS_THINKING: ModelCapabilities = {
+	...ANTHROPIC_HIDDEN_THINKING,
+	thinkingAlwaysOn: true,
 };
 /** Legacy Claude (4-5 era): extended thinking with an explicit token budget; still accepts topK. */
 const ANTHROPIC_BUDGET: ModelCapabilities = {
@@ -258,6 +275,14 @@ const BEDROCK_SAMPLING: ModelCapabilities = {
 	serviceTierOptions: BEDROCK_TIERS,
 };
 
+/** Bedrock GPT-6 reasoning models do not support sampling or service-tier parameters. */
+const BEDROCK_OPENAI_REASONING: ModelCapabilities = {
+	thinking: 'none',
+	sampling: false,
+	topK: false,
+	maxOutputTokens: true,
+};
+
 /** Ollama local models: sampling + max output tokens (thinking is a model-creation setting, deferred). */
 const OLLAMA_SAMPLING: ModelCapabilities = { thinking: 'none', sampling: true, topK: true, maxOutputTokens: true };
 
@@ -302,6 +327,21 @@ const MOONSHOT_SAMPLING: ModelCapabilities = {
 	temperatureMax: 1,
 };
 
+/** Muse models always reason, so `off` leaves the effort to the model rather than disabling thinking. */
+const META_ADAPTIVE: ModelCapabilities = {
+	thinking: 'adaptive',
+	sampling: true,
+	topK: false,
+	maxOutputTokens: true,
+	effortOptions: META_EFFORTS,
+	// The Model API rejects `top_p: 0` with a 400; the floor matches the control's step.
+	topPMin: 0.05,
+};
+const META_CUSTOM: ModelCapabilities = {
+	...META_ADAPTIVE,
+	effortOptions: META_CUSTOM_EFFORTS,
+};
+
 /**
  * Models behind a user-declared OpenAI-compatible endpoint. Nothing says whether they reason or
  * only sample, so both surfaces are offered: every parameter is opt-in and only sent once the
@@ -329,21 +369,28 @@ export const PROVIDER_META: ProviderMetaMap = {
 				name: 'Claude Fable 5',
 				contextWindow: 300_000,
 				costPerM: { inputNoCache: 10, inputCacheRead: 1, inputCacheWrite: 12.5, output: 50 },
-				capabilities: ANTHROPIC_ADAPTIVE,
+				capabilities: ANTHROPIC_ALWAYS_THINKING,
 			},
 			{
 				id: 'claude-fable-5-1',
 				name: 'Claude Fable 5.1',
 				contextWindow: 300_000,
 				costPerM: { inputNoCache: 10, inputCacheRead: 0.25, inputCacheWrite: 12.5, output: 50 },
-				capabilities: ANTHROPIC_ADAPTIVE,
+				capabilities: ANTHROPIC_ALWAYS_THINKING,
 			},
 			{
 				id: 'claude-opus-5-5',
 				name: 'Claude Opus 5.5',
 				contextWindow: 1_000_000,
 				costPerM: { inputNoCache: 4, inputCacheRead: 0.2, inputCacheWrite: 5, output: 20 },
-				capabilities: ANTHROPIC_ADAPTIVE,
+				capabilities: ANTHROPIC_ALWAYS_THINKING,
+			},
+			{
+				id: 'claude-haiku-5-5',
+				name: 'Claude Haiku 5.5',
+				contextWindow: 1_000_000,
+				costPerM: { inputNoCache: 0.1, inputCacheRead: 0.01, inputCacheWrite: 0.125, output: 0.5 },
+				capabilities: ANTHROPIC_ALWAYS_THINKING,
 			},
 			{
 				id: 'claude-sonnet-5',
@@ -351,28 +398,28 @@ export const PROVIDER_META: ProviderMetaMap = {
 				default: true,
 				contextWindow: 200_000,
 				costPerM: { inputNoCache: 2, inputCacheRead: 0.2, inputCacheWrite: 2.5, output: 10 },
-				capabilities: ANTHROPIC_ADAPTIVE,
+				capabilities: ANTHROPIC_ALWAYS_THINKING,
 			},
 			{
 				id: 'claude-opus-5',
 				name: 'Claude Opus 5',
 				contextWindow: 1_000_000,
 				costPerM: { inputNoCache: 5, inputCacheRead: 0.5, inputCacheWrite: 6.25, output: 25 },
-				capabilities: ANTHROPIC_ADAPTIVE,
+				capabilities: ANTHROPIC_ALWAYS_THINKING,
 			},
 			{
 				id: 'claude-opus-4-8',
 				name: 'Claude Opus 4.8',
 				contextWindow: 200_000,
 				costPerM: { inputNoCache: 5, inputCacheRead: 0.5, inputCacheWrite: 6.25, output: 25 },
-				capabilities: ANTHROPIC_ADAPTIVE,
+				capabilities: ANTHROPIC_HIDDEN_THINKING,
 			},
 			{
 				id: 'claude-opus-4-7',
 				name: 'Claude Opus 4.7',
 				contextWindow: 200_000,
 				costPerM: { inputNoCache: 5, inputCacheRead: 0.5, inputCacheWrite: 6.25, output: 25 },
-				capabilities: ANTHROPIC_ADAPTIVE,
+				capabilities: ANTHROPIC_HIDDEN_THINKING,
 			},
 			{
 				id: 'claude-sonnet-4-6',
@@ -546,6 +593,13 @@ export const PROVIDER_META: ProviderMetaMap = {
 		summaryModelId: 'mistral-medium-latest',
 		models: [
 			{
+				id: 'mistral-large-4',
+				name: 'Mistral Large 4',
+				contextWindow: 1_000_000,
+				costPerM: { inputNoCache: 1.36, inputCacheRead: 0.14, inputCacheWrite: 0, output: 4.18 },
+				capabilities: MISTRAL_SAMPLING,
+			},
+			{
 				id: 'mistral-medium-latest',
 				name: 'Mistral Medium 3.1',
 				default: true,
@@ -686,6 +740,110 @@ export const PROVIDER_META: ProviderMetaMap = {
 		extractorModelId: 'anthropic.claude-sonnet-4-6',
 		summaryModelId: 'anthropic.claude-sonnet-4-6',
 		models: [
+			// AWS model cards: https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-6-astra.html
+			// https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-6-1-sol.html
+			// https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-6-sol.html
+			// https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-6-luna.html
+			// Standard pricing below is for <=272K input tokens. The single-rate estimator cannot
+			// represent the >272K rates or other Bedrock service tiers.
+			{
+				id: 'global.openai.gpt-6-astra',
+				name: 'GPT 6 Astra (Bedrock Global)',
+				contextWindow: 1_050_000,
+				costPerM: { inputNoCache: 10, inputCacheRead: 1, inputCacheWrite: 12.5, output: 50 },
+				capabilities: BEDROCK_OPENAI_REASONING,
+			},
+			{
+				id: 'global.openai.gpt-6.1-sol',
+				name: 'GPT 6.1 Sol (Bedrock Global)',
+				contextWindow: 1_050_000,
+				costPerM: { inputNoCache: 2, inputCacheRead: 0.1, inputCacheWrite: 2.5, output: 10 },
+				capabilities: BEDROCK_OPENAI_REASONING,
+			},
+			{
+				id: 'global.openai.gpt-6-sol',
+				name: 'GPT 6 Sol (Bedrock Global)',
+				contextWindow: 1_050_000,
+				costPerM: { inputNoCache: 2, inputCacheRead: 0.2, inputCacheWrite: 2.5, output: 10 },
+				capabilities: BEDROCK_OPENAI_REASONING,
+			},
+			{
+				id: 'global.openai.gpt-6-luna',
+				name: 'GPT 6 Luna (Bedrock Global)',
+				contextWindow: 1_050_000,
+				costPerM: { inputNoCache: 0.1, inputCacheRead: 0.01, inputCacheWrite: 0.125, output: 0.5 },
+				capabilities: BEDROCK_OPENAI_REASONING,
+			},
+			{
+				id: 'us.openai.gpt-6-astra',
+				name: 'GPT 6 Astra (Bedrock US)',
+				contextWindow: 1_050_000,
+				costPerM: { inputNoCache: 11, inputCacheRead: 1.1, inputCacheWrite: 13.75, output: 55 },
+				capabilities: BEDROCK_OPENAI_REASONING,
+			},
+			{
+				id: 'us.openai.gpt-6.1-sol',
+				name: 'GPT 6.1 Sol (Bedrock US)',
+				contextWindow: 1_050_000,
+				costPerM: { inputNoCache: 2.2, inputCacheRead: 0.11, inputCacheWrite: 2.75, output: 11 },
+				capabilities: BEDROCK_OPENAI_REASONING,
+			},
+			{
+				id: 'us.openai.gpt-6-sol',
+				name: 'GPT 6 Sol (Bedrock US)',
+				contextWindow: 1_050_000,
+				costPerM: { inputNoCache: 2.2, inputCacheRead: 0.22, inputCacheWrite: 2.75, output: 11 },
+				capabilities: BEDROCK_OPENAI_REASONING,
+			},
+			{
+				id: 'us.openai.gpt-6-luna',
+				name: 'GPT 6 Luna (Bedrock US)',
+				contextWindow: 1_050_000,
+				costPerM: { inputNoCache: 0.11, inputCacheRead: 0.011, inputCacheWrite: 0.1375, output: 0.55 },
+				capabilities: BEDROCK_OPENAI_REASONING,
+			},
+			{
+				id: 'global.anthropic.claude-opus-5-5',
+				name: 'Claude Opus 5.5 (Bedrock Global)',
+				contextWindow: 1_000_000,
+				costPerM: { inputNoCache: 4, inputCacheRead: 0.2, inputCacheWrite: 5, output: 20 },
+				capabilities: BEDROCK_ADAPTIVE,
+			},
+			{
+				id: 'us.anthropic.claude-opus-5-5',
+				name: 'Claude Opus 5.5 (Bedrock US)',
+				contextWindow: 1_000_000,
+				costPerM: { inputNoCache: 4, inputCacheRead: 0.2, inputCacheWrite: 5, output: 20 },
+				capabilities: BEDROCK_ADAPTIVE,
+			},
+			{
+				id: 'global.anthropic.claude-sonnet-5-5',
+				name: 'Claude Sonnet 5.5 (Bedrock Global)',
+				contextWindow: 1_000_000,
+				costPerM: { inputNoCache: 2, inputCacheRead: 0.2, inputCacheWrite: 2.5, output: 10 },
+				capabilities: BEDROCK_ADAPTIVE,
+			},
+			{
+				id: 'us.anthropic.claude-sonnet-5-5',
+				name: 'Claude Sonnet 5.5 (Bedrock US)',
+				contextWindow: 1_000_000,
+				costPerM: { inputNoCache: 2, inputCacheRead: 0.2, inputCacheWrite: 2.5, output: 10 },
+				capabilities: BEDROCK_ADAPTIVE,
+			},
+			{
+				id: 'global.anthropic.claude-sonnet-5',
+				name: 'Claude Sonnet 5 (Bedrock Global)',
+				contextWindow: 1_000_000,
+				costPerM: { inputNoCache: 2, inputCacheRead: 0.2, inputCacheWrite: 2.5, output: 10 },
+				capabilities: BEDROCK_ADAPTIVE,
+			},
+			{
+				id: 'us.anthropic.claude-sonnet-5',
+				name: 'Claude Sonnet 5 (Bedrock US)',
+				contextWindow: 1_000_000,
+				costPerM: { inputNoCache: 2, inputCacheRead: 0.2, inputCacheWrite: 2.5, output: 10 },
+				capabilities: BEDROCK_ADAPTIVE,
+			},
 			{
 				id: 'us.anthropic.claude-sonnet-4-6',
 				name: 'Claude Sonnet 4.6 (Bedrock US)',
@@ -898,6 +1056,31 @@ export const PROVIDER_META: ProviderMetaMap = {
 			},
 		],
 	},
+	meta: {
+		auth: { apiKey: 'required' },
+		envVar: 'META_API_KEY',
+		baseUrlEnvVar: 'META_BASE_URL',
+		defaultBaseUrl: OPENAI_COMPATIBLE_BASE_URLS.meta,
+		extractorModelId: 'muse-spark-1.3',
+		summaryModelId: 'muse-spark-1.3',
+		models: [
+			{
+				id: 'muse-spark-1.3',
+				name: 'Muse Spark 1.3',
+				default: true,
+				contextWindow: 1_048_576,
+				costPerM: { inputNoCache: 1.25, inputCacheRead: 0.15, inputCacheWrite: 0, output: 4.25 },
+				capabilities: META_ADAPTIVE,
+			},
+			{
+				id: 'muse-wonder-1.0',
+				name: 'Muse Wonder 1.0',
+				contextWindow: 1_048_576,
+				costPerM: { inputNoCache: 4, inputCacheRead: 0.2, inputCacheWrite: 0, output: 20 },
+				capabilities: META_ADAPTIVE,
+			},
+		],
+	},
 	openaiCompatible: {
 		auth: {
 			apiKey: 'optional',
@@ -991,6 +1174,8 @@ export function getModelCapabilities(provider: LlmProvider, modelId: string): Mo
 			return MINIMAX_SAMPLING;
 		case 'moonshot':
 			return MOONSHOT_ADAPTIVE;
+		case 'meta':
+			return META_CUSTOM;
 		case 'requesty':
 		case 'openaiCompatible':
 			return OPENAI_COMPATIBLE_CUSTOM;
@@ -1042,6 +1227,7 @@ export function getModelParameterSpec(provider: LlmProvider, modelId: string): P
 		// temperature and drops all sampling params while thinking is active.
 		const isClaude = isAnthropicApiModel(provider, modelId);
 		const temperatureMax = caps.temperatureMax ?? DEFAULT_TEMPERATURE_MAX;
+		const topPMin = caps.topPMin ?? 0;
 		controls.push(
 			{
 				key: 'temperature',
@@ -1057,9 +1243,9 @@ export function getModelParameterSpec(provider: LlmProvider, modelId: string): P
 				key: 'topP',
 				kind: 'number',
 				label: 'Top P',
-				placeholder: '0 – 1',
+				placeholder: `${topPMin} – 1`,
 				step: 0.05,
-				min: 0,
+				min: topPMin,
 				max: 1,
 				...(isClaude && { group: 'sampling' as const, exclusiveWith: 'temperature' as const }),
 			},
@@ -1123,6 +1309,8 @@ function buildExtraParamControl(key: ExtraParamKey, caps: ModelCapabilities): Pa
 			return { key, kind: 'select', label: 'Inference geography', options: ['us', 'global'] };
 		case 'sendReasoning':
 			return { key, kind: 'boolean', label: 'Send reasoning back' };
+		case 'thinkingDisplay':
+			return { key, kind: 'select', label: 'Thinking display', options: thinkingDisplaySchema.options };
 		case 'includeThoughts':
 			return { key, kind: 'boolean', label: 'Include thoughts' };
 		case 'safetyThreshold':

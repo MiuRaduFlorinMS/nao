@@ -1,5 +1,14 @@
 import { z } from 'zod/v4';
 
+/**
+ * Pre-registered OAuth client for providers that reject Dynamic Client Registration.
+ * When set, nao sends this client in the authorization-code + PKCE flow instead of registering itself.
+ */
+export interface McpOAuthClientConfig {
+	clientId: string;
+	clientSecret?: string;
+}
+
 export interface McpServerConfig {
 	type?: 'http';
 	transport?: 'streamable-http' | 'sse' | 'http' | 'stdio';
@@ -7,6 +16,7 @@ export interface McpServerConfig {
 	headers?: Record<string, string>;
 	/** Mints a fresh Google Cloud identity token per call (for IAM-protected Cloud Run servers). */
 	auth?: { type: 'gcp-id-token'; audience?: string };
+	oauth?: McpOAuthClientConfig;
 
 	// For stdio transport
 	command?: string;
@@ -68,6 +78,12 @@ export const mcpJsonSchema = z.object({
 				.object({
 					type: z.literal('gcp-id-token'),
 					audience: z.string().url().optional(),
+				})
+				.optional(),
+			oauth: z
+				.object({
+					clientId: z.string().min(1),
+					clientSecret: z.string().min(1).optional(),
 				})
 				.optional(),
 			command: z.string().optional(),

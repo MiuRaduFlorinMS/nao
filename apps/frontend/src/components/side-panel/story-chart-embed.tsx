@@ -3,9 +3,11 @@ import { Code, Pencil } from 'lucide-react';
 import { memo, useContext, useMemo, useState } from 'react';
 import { StoryBlockDragContext } from './story-editor-drag-context';
 import { StoryEmbedFallback } from './story-embed-fallback';
+import type { ChartType } from '@nao/shared/chart-types';
 import type { ParsedChartBlock } from '@nao/shared/story-segments';
 import type { displayChart } from '@nao/shared/tools';
 
+import type { ChartEditorView } from '@/components/tool-calls/display-chart-edit-dialog';
 import { StoryChartQueryView } from '@/components/side-panel/story-chart-query';
 import { ChartDisplay } from '@/components/tool-calls/display-chart';
 import { ChartConfigEditDialog } from '@/components/tool-calls/display-chart-edit-dialog';
@@ -14,10 +16,12 @@ import { useStoryChartEdit } from '@/contexts/story-chart-edit';
 import { useStoryEmbedData } from '@/contexts/story-embed-data';
 import { useStoryQuerySql } from '@/contexts/story-query-sql';
 import { useSourceQuery } from '@/hooks/use-source-query';
+import { useStoryChartSourceQuery } from '@/hooks/use-story-chart-source-query';
 import { sortByDateKey } from '@/lib/charts.utils';
 import { cn } from '@/lib/utils';
 
 const STORY_CHART_HEIGHT_CLASS = 'h-72';
+const EMPTY_ROWS: Record<string, unknown>[] = [];
 
 type ChartBlock = ParsedChartBlock;
 
@@ -76,7 +80,7 @@ export const StoryChartEmbed = memo(function StoryChartEmbed({
 		>
 			<ChartDisplay
 				data={data}
-				chartType={chart.chartType as displayChart.ChartType}
+				chartType={chart.chartType as ChartType}
 				xAxisKey={chart.xAxisKey}
 				xAxisType={xAxisType}
 				xAxisLabel={chart.xAxisLabel}
@@ -124,14 +128,23 @@ export function StoryChartEmbedShell({
 	const edit = useStoryChartEdit();
 	const querySqlSource = useStoryQuerySql();
 	const [isEditOpen, setIsEditOpen] = useState(false);
+	const [editorView, setEditorView] = useState<ChartEditorView>('chart');
 	const [showQuery, setShowQuery] = useState(false);
 	const canEdit = Boolean(edit && chart.rawTag);
-	const canViewQuery = Boolean(querySqlSource);
+	const sourceQuery = useStoryChartSourceQuery({
+		queryId: chart.queryId,
+		story: edit?.story,
+		columns: availableColumns,
+		data: data ?? EMPTY_ROWS,
+		enabled: canEdit && isEditOpen,
+	});
+	const canOpenQueryEditor = canEdit && (sourceQuery !== null || Boolean(edit?.story));
+	const canViewQuery = canOpenQueryEditor || Boolean(querySqlSource);
 
 	const config = useMemo(
 		() => ({
 			query_id: chart.queryId,
-			chart_type: chart.chartType as displayChart.ChartType,
+			chart_type: chart.chartType as ChartType,
 			x_axis_key: chart.xAxisKey,
 			x_axis_type: (chart.xAxisType || null) as displayChart.XAxisType | null,
 			x_axis_label: chart.xAxisLabel,
@@ -159,11 +172,15 @@ export function StoryChartEmbedShell({
 	);
 
 	const isKpi = chart.chartType === 'kpi_card';
+	const openEditor = (view: ChartEditorView) => {
+		setEditorView(view);
+		setIsEditOpen(true);
+	};
 	const editButton = canEdit ? (
 		<Button
 			variant='ghost-muted'
 			size='icon-xs'
-			onClick={() => setIsEditOpen(true)}
+			onClick={() => openEditor('chart')}
 			title='Edit chart'
 			className='shrink-0 hover:bg-accent hover:rounded-full'
 		>
@@ -174,8 +191,8 @@ export function StoryChartEmbedShell({
 		<Button
 			variant='ghost-muted'
 			size='icon-xs'
-			onClick={() => setShowQuery((current) => !current)}
-			title={showQuery ? 'Hide SQL query' : 'View SQL query'}
+			onClick={() => (canOpenQueryEditor ? openEditor('query') : setShowQuery((current) => !current))}
+			title={canOpenQueryEditor ? 'Edit SQL query' : showQuery ? 'Hide SQL query' : 'View SQL query'}
 			className={cn('shrink-0 hover:bg-accent hover:rounded-full', showQuery && 'bg-accent rounded-full')}
 		>
 			<Code className='size-3.5' />
@@ -223,6 +240,8 @@ export function StoryChartEmbedShell({
 					isSaving={edit.isSaving}
 					onSave={(next) => edit.saveChart(chart.rawTag!, next)}
 					description={edit.saveDescription}
+					sourceQuery={sourceQuery}
+					initialView={editorView}
 				/>
 			)}
 		</div>

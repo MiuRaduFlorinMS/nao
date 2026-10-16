@@ -22,6 +22,7 @@ import {
 	createLiveToolCall,
 	createMattermostAnswerMessage,
 	createSummaryToolCalls,
+	escapeMarkdownText,
 	EXCLUDED_TOOLS,
 	formatClarificationText,
 	formatMessagingError,
@@ -30,6 +31,8 @@ import {
 	resolveMattermostCallbackBaseUrl,
 } from '../utils/messaging-provider';
 import { agentService } from './agent';
+import { getAppName } from './branding.service';
+import { assertProjectCloudBillingAccess } from './cloud-billing-access.service';
 import {
 	cacheMattermostEmail,
 	createMattermostActionSecret,
@@ -56,8 +59,6 @@ import {
 	truncateMattermostMarkdown,
 	verifyMattermostFeedbackMetadata,
 } from './mattermost-helpers';
-import { posthog, PostHogEvent } from './posthog';
-
 /** Matches Slack's 200ms cadence; 429s are retried because Mattermost's server bucket is shared. */
 const UPDATE_INTERVAL_MS = 200;
 
@@ -280,7 +281,10 @@ class ProjectMattermostBot {
 		};
 
 		try {
-			await this._validateUserAccess(ctx);
+			if (!(await this._validateUserAccess(ctx))) {
+				return;
+			}
+			await assertProjectCloudBillingAccess(this._config.projectId);
 			ctx.convMessage = await ctx.thread.post('✨ nao is answering...');
 			this._answerPostStates.set(ctx.convMessage.id, {
 				baseProps: getMattermostPostBaseProps(ctx.convMessage.raw),
@@ -297,10 +301,12 @@ class ProjectMattermostBot {
 
 			await this._handleStreamAgent(chat, ctx);
 		} catch (error) {
+			const errorMessage = formatMessagingError(error);
 			if (!ctx.convMessage) {
+				await ctx.thread.post(errorMessage);
 				return;
 			}
-			ctx.bodyParts = [formatMessagingError(error)];
+			ctx.bodyParts = [errorMessage];
 			await this._editAnswerMessage(ctx);
 		} finally {
 			if (ctx.convMessage) {
@@ -311,9 +317,8 @@ class ProjectMattermostBot {
 		}
 	}
 
-	private async _validateUserAccess(ctx: MattermostConversationContext): Promise<void> {
-		await this._getUser(ctx);
-		await this._checkUserBelongsToProject(ctx);
+	private async _validateUserAccess(ctx: MattermostConversationContext): Promise<boolean> {
+		return (await this._getUser(ctx)) && this._checkUserBelongsToProject(ctx);
 	}
 
 	private async _handleLoginCommand(thread: Thread, message: Message, code: string): Promise<void> {
@@ -342,7 +347,7 @@ class ProjectMattermostBot {
 		return raw?.user_id || null;
 	}
 
-	private async _getUser(ctx: MattermostConversationContext): Promise<void> {
+	private async _getUser(ctx: MattermostConversationContext): Promise<boolean> {
 		const mattermostId = this._getMattermostId(ctx.userMessage);
 		if (!mattermostId) {
 			throw new Error('Could not retrieve user identity from Mattermost');
@@ -353,9 +358,10 @@ class ProjectMattermostBot {
 			await ctx.thread.post(
 				'👋 I could not match your Mattermost email. Send `login <your-code>` to link manually. Find your code in project settings.',
 			);
-			throw new Error('User not linked');
+			return false;
 		}
 		ctx.user = user;
+		return true;
 	}
 
 	private async _resolveLinkedUser(message: Message): Promise<User | null> {
@@ -384,14 +390,15 @@ class ProjectMattermostBot {
 		}
 	}
 
-	private async _checkUserBelongsToProject(ctx: MattermostConversationContext): Promise<void> {
+	private async _checkUserBelongsToProject(ctx: MattermostConversationContext): Promise<boolean> {
 		const role = await projectQueries.getUserRoleInProject(this._config.projectId, ctx.user!.id);
 		if (role !== 'admin' && role !== 'user' && role !== 'context_admin') {
 			await ctx.thread.post(
 				"❌ You don't have permission to use nao in this project. Please contact an administrator.",
 			);
-			throw new Error('User does not have permission to access this project');
+			return false;
 		}
+		return true;
 	}
 
 	private async _saveOrUpdateUserMessage(ctx: MattermostConversationContext): Promise<void> {
@@ -439,15 +446,6 @@ class ProjectMattermostBot {
 				await this._setStopAttachment(answerPostId, false);
 			}
 			await this._attachAnswerAndSeedReactions(ctx, lastMessage?.id);
-
-			posthog.capture(ctx.user!.id, PostHogEvent.MessageSent, {
-				project_id: this._config.projectId,
-				chat_id: ctx.chatId,
-				model_id: ctx.modelId,
-				is_new_chat: ctx.isNewChat,
-				source: 'mattermost',
-				domain_host: new URL(this._config.redirectUrl).host,
-			});
 		} finally {
 			if (answerPostId) {
 				await this._setStopAttachment(answerPostId, false);
@@ -462,10 +460,18 @@ class ProjectMattermostBot {
 		const agent = await agentService.create(
 			{ ...chat, userId: ctx.user!.id, projectId: this._config.projectId },
 			this._config.modelSelection,
-			{ supportsCustomCharts: false },
+			{ billingAccessVerifiedProjectId: this._config.projectId, supportsCustomCharts: false },
 		);
 		ctx.modelId = agent.getModelId();
-		return agent.stream(chat.messages, { provider: 'mattermost', timezone: ctx.timezone });
+		return agent.stream(chat.messages, {
+			provider: 'mattermost',
+			timezone: ctx.timezone,
+			tracking: {
+				source: 'mattermost',
+				isNewChat: ctx.isNewChat,
+				domainHost: new URL(this._config.redirectUrl).host,
+			},
+		});
 	}
 
 	private async _readStreamAndUpdateMessage(
@@ -523,12 +529,13 @@ class ProjectMattermostBot {
 		if (!answerMessage) {
 			return;
 		}
-		const linkLength = chatUrl ? createMattermostAnswerMessage('', chatUrl).markdown.length + 2 : 0;
+		const appName = await getAppName();
+		const linkLength = chatUrl ? createMattermostAnswerMessage('', chatUrl, appName).markdown.length + 2 : 0;
 		const body = truncateMattermostMarkdown(
 			this._renderBody(ctx),
 			Math.max(MATTERMOST_POST_MAX_LENGTH - linkLength, 0),
 		);
-		const message = createMattermostAnswerMessage(body, chatUrl).markdown;
+		const message = createMattermostAnswerMessage(body, chatUrl, appName).markdown;
 		await this._patchAnswerPost(answerMessage.id, (state) => {
 			state.message = message;
 		});
@@ -655,7 +662,10 @@ class ProjectMattermostBot {
 			state.renderedToolCallIds.add(part.toolCallId);
 			ctx.answerTextPartIndex = -1;
 			const chatUrl = new URL(ctx.chatId, this._config.redirectUrl).toString();
-			ctx.bodyParts.push(`⚠️ This chart couldn't be rendered in Mattermost. [Open it in nao](${chatUrl}).`);
+			const appName = await getAppName();
+			ctx.bodyParts.push(
+				`⚠️ This chart couldn't be rendered in Mattermost. [Open it in ${escapeMarkdownText(appName)}](${chatUrl}).`,
+			);
 			try {
 				await this._editAnswerMessage(ctx);
 			} catch (editError) {
@@ -710,8 +720,11 @@ class ProjectMattermostBot {
 		}
 		try {
 			const chatUrl = new URL(ctx.chatId, this._config.redirectUrl).toString();
+			const appName = await getAppName();
 			ctx.answerTextPartIndex = -1;
-			ctx.bodyParts.push(`🗺️ **${part.input.title}**\n\n[View interactive map in nao](${chatUrl})`);
+			ctx.bodyParts.push(
+				`🗺️ **${part.input.title}**\n\n[View interactive map in ${escapeMarkdownText(appName)}](${chatUrl})`,
+			);
 			await this._editAnswerMessage(ctx);
 		} catch (error) {
 			logger.error(`Error rendering Mattermost map link: ${String(error)}`, {

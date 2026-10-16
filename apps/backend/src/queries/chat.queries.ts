@@ -273,6 +273,7 @@ const aggregateChatMessagParts = (
 					isForked: row.chat_message.isForked ?? undefined,
 					citation: row.chat_message.citation ?? undefined,
 					stopReason: row.chat_message.stopReason ?? undefined,
+					llmProvider: row.chat_message.llmProvider ?? undefined,
 					createdAt: row.chat_message.createdAt?.getTime(),
 				};
 			}
@@ -918,9 +919,9 @@ const isNotAutomationRunChat = () => {
 	return sql`not exists (select 1 from ${s.automationRun} where ${s.automationRun.chatId} = ${s.chat.id})`;
 };
 
-export const getSelectionForksByShareId = async (
+export const getSelectionForksBySourceId = async (
 	userId: string,
-	shareId: string,
+	sourceId: string,
 	forkType: 'chat_selection' | 'story_selection',
 ): Promise<{ chatId: string; selectionStart: number; selectionEnd: number; selectionText: string }[]> => {
 	const typeFilter =
@@ -930,8 +931,8 @@ export const getSelectionForksByShareId = async (
 
 	const idFilter =
 		dbConfig.dialect === Dialect.Postgres
-			? sql`${s.chat.forkMetadata}->>'id' = ${shareId}`
-			: sql`json_extract(${s.chat.forkMetadata}, '$.id') = ${shareId}`;
+			? sql`${s.chat.forkMetadata}->>'id' = ${sourceId}`
+			: sql`json_extract(${s.chat.forkMetadata}, '$.id') = ${sourceId}`;
 
 	const results = await db
 		.select({ id: s.chat.id, forkMetadata: s.chat.forkMetadata })
@@ -994,6 +995,29 @@ export const getLatestAssistantModel = async (
 	}
 
 	return { provider: result.provider, modelId: result.modelId };
+};
+
+export const getAssistantMessageModels = async (
+	chatId: string,
+): Promise<Array<{ messageId: string; provider: LlmProvider; modelId: string }>> => {
+	const rows = await db
+		.select({ messageId: s.chatMessage.id, provider: s.chatMessage.llmProvider, modelId: s.chatMessage.llmModelId })
+		.from(s.chatMessage)
+		.where(
+			and(
+				eq(s.chatMessage.chatId, chatId),
+				eq(s.chatMessage.role, 'assistant'),
+				isNull(s.chatMessage.supersededAt),
+				isNotNull(s.chatMessage.llmProvider),
+				isNotNull(s.chatMessage.llmModelId),
+			),
+		)
+		.orderBy(asc(s.chatMessage.createdAt))
+		.execute();
+
+	return rows.flatMap(({ messageId, provider, modelId }) =>
+		provider && modelId ? [{ messageId, provider, modelId }] : [],
+	);
 };
 
 export const getProjectIdByQueryId = async (queryId: string): Promise<string | undefined> => {

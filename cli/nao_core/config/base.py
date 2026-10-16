@@ -20,6 +20,7 @@ from .databases import DATABASE_CONFIG_CLASSES, AnyDatabaseConfig, DatabaseTempl
 from .error_handler import format_all_validation_errors
 from .llm import LLMConfig
 from .mcp import McpConfig
+from .metabase import MetabaseConfig
 from .notion import NotionConfig
 from .obsidian import ObsidianConfig
 from .repos import RepoConfig
@@ -27,6 +28,7 @@ from .secrets import process_secrets
 from .semantic_layer import SemanticLayerConfig
 from .skills import SkillsConfig
 from .slack import SlackConfig
+from .tableau import TableauConfig
 from .test import TestConfig
 
 
@@ -40,7 +42,19 @@ class NaoConfigError(Exception):
 # config (e.g. `nao sync` with the databases provider) can load with
 # drop_invalid_optional_sections=True so an unresolvable block here — typically an
 # unset env('...') secret — is ignored with a warning instead of failing the run.
-OPTIONAL_SECTIONS = ("llm", "slack", "notion", "confluence", "obsidian", "mcp", "skills", "test", "semantic_layer")
+OPTIONAL_SECTIONS = (
+    "llm",
+    "slack",
+    "notion",
+    "confluence",
+    "obsidian",
+    "mcp",
+    "metabase",
+    "skills",
+    "test",
+    "semantic_layer",
+    "tableau",
+)
 
 
 class NaoConfig(BaseModel):
@@ -56,11 +70,13 @@ class NaoConfig(BaseModel):
     llm: LLMConfig | None = Field(default=None, description="The LLM configuration")
     slack: SlackConfig | None = Field(default=None, description="The Slack configuration")
     mcp: McpConfig | None = Field(default=None, description="The MCP configuration")
+    metabase: MetabaseConfig | None = Field(default=None, description="The Metabase configuration")
     skills: SkillsConfig | None = Field(default=None, description="The Skills configuration")
     test: TestConfig | None = Field(default=None, description="The defaults used by `nao test`")
     semantic_layer: SemanticLayerConfig | None = Field(
         default=None, description="The semantic layer (dbt MetricFlow) the agent can query"
     )
+    tableau: TableauConfig | None = Field(default=None, description="The Tableau connection")
 
     _missing_secrets: dict[str, None] = {}
 
@@ -189,13 +205,16 @@ class NaoConfig(BaseModel):
     def save(self, path: Path) -> None:
         """Save the configuration to a YAML file."""
         config_file = path / "nao_config.yaml"
+        serialized_config = self.model_dump(mode="json", by_alias=True, exclude_none=True)
+        if self.metabase is not None:
+            serialized_config["metabase"]["api_key"] = self.metabase.api_key.get_secret_value()
         with config_file.open("w") as f:
             # Documentation Link
             f.write("# Configuration documentation:\n")
             f.write("# https://docs.getnao.io/nao-agent/context-builder/configuration#nao_config-yaml\n\n")
 
             yaml.dump(
-                self.model_dump(mode="json", by_alias=True, exclude_none=True),
+                serialized_config,
                 f,
                 default_flow_style=False,
                 sort_keys=False,
@@ -260,7 +279,7 @@ class NaoConfig(BaseModel):
         UI.warn(
             "nao_config.yaml declares a single inline `llm` provider, which is deprecated. Move it "
             "under `llm.providers` to configure several providers, the models each one exposes and "
-            "their costs. Run `nao migrate` to rewrite it automatically."
+            "their costs."
         )
 
     def get_connection(self, name: str) -> BaseBackend:

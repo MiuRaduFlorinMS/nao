@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod/v4';
 
-import * as orgQueries from '../queries/organization.queries';
 import * as projectQueries from '../queries/project.queries';
 import * as userQueries from '../queries/user.queries';
 import * as gitlabService from '../services/gitlab';
@@ -15,7 +14,12 @@ import {
 	readProjectNameFromConfig,
 	replaceExistingProject,
 } from '../utils/project-import.utils';
-import { adminProtectedProcedure, protectedProcedure } from './trpc';
+import {
+	adminProtectedProcedure,
+	cloudBillingAdminProcedure,
+	cloudBillingOrganizationProcedure,
+	protectedProcedure,
+} from './trpc';
 
 export const gitlabRoutes = {
 	isAvailable: protectedProcedure.query(() => {
@@ -58,7 +62,7 @@ export const gitlabRoutes = {
 			}
 		}),
 
-	createProjectFromRepo: protectedProcedure
+	createProjectFromRepo: cloudBillingOrganizationProcedure
 		.input(
 			z.object({
 				projectPathWithNamespace: z.string(),
@@ -72,11 +76,6 @@ export const gitlabRoutes = {
 				throw new TRPCError({ code: 'BAD_REQUEST', message: 'GitLab is not connected' });
 			}
 
-			const membership = await orgQueries.getUserOrgMembership(ctx.user.id, ctx.selectedOrganizationId);
-			if (!membership) {
-				throw new TRPCError({ code: 'NOT_FOUND', message: 'You are not a member of any organization' });
-			}
-
 			const cloneDir = createTempProjectDir('gitlab-import');
 			try {
 				try {
@@ -88,7 +87,7 @@ export const gitlabRoutes = {
 					throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Failed to clone repository' });
 				}
 
-				const orgId = membership.orgId;
+				const orgId = ctx.organization.id;
 				const projectName =
 					input.projectName ||
 					readProjectNameFromConfig(cloneDir) ||
@@ -102,7 +101,12 @@ export const gitlabRoutes = {
 							cause: { conflictingProjectName: projectName },
 						});
 					}
-					return replaceExistingProject({ sourceDir: cloneDir, project: existing, projectName });
+					return replaceExistingProject({
+						sourceDir: cloneDir,
+						project: existing,
+						projectName,
+						userId: ctx.user.id,
+					});
 				}
 
 				return createNewProject({ sourceDir: cloneDir, projectName, orgId });
@@ -122,7 +126,7 @@ export const gitlabRoutes = {
 		return gitlabService.getGitInfo(ctx.project.path);
 	}),
 
-	unlinkProject: adminProtectedProcedure.mutation(async ({ ctx }) => {
+	unlinkProject: cloudBillingAdminProcedure.mutation(async ({ ctx }) => {
 		if (!ctx.project.path) {
 			throw new TRPCError({ code: 'BAD_REQUEST', message: 'Project path not configured' });
 		}

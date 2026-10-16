@@ -95,7 +95,9 @@ describe('context recommendations scheduling', () => {
 	it('runs recommendations only for the project in the job payload', async () => {
 		await contextRecommendationsHandler({ projectId: 'project-1' }, {} as never);
 
-		expect(mocks.runContextRecommendations).toHaveBeenCalledWith('project-1');
+		expect(mocks.runContextRecommendations).toHaveBeenCalledWith('project-1', {
+			billingAccessVerifiedProjectId: 'project-1',
+		});
 	});
 
 	it('rejects legacy global jobs without a project payload', async () => {

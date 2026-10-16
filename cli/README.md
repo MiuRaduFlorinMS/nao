@@ -251,7 +251,19 @@ Connects the CLI to your nao account: it opens the app in your browser, asks you
 nao test
 ```
 
-Runs test cases defined as YAML files in `tests/`. Each test has a `name`, `prompt`, and expected `sql`. Results are saved to `tests/outputs/`.
+Runs test cases defined as YAML files in `tests/`. Each test has a `name`, `prompt`, and optional expected `sql` and/or `assertions`. Results are saved to `tests/outputs/`.
+
+Final-output checks use reference `sql` (dataframe equality). Intermediate agent actions use `assertions` against the run's tool-call trace — for example, requiring a clarifying follow-up:
+
+```yaml
+name: ambiguous_revenue_period
+prompt: What was the revenue?
+assertions:
+  - type: tool_call
+    tool: clarification
+```
+
+`tool_call` assertions can also require a specific tool (e.g. `execute_sql`), optional arg subset match via `args` (omit it to match any call; an empty mapping is rejected), and `min_count`. SQL verification and assertions can be combined; the run passes only if every check passes. A test file with an invalid `assertions` block fails the whole run instead of being skipped.
 
 Options:
 

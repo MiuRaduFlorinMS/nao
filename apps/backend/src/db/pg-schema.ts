@@ -1,6 +1,6 @@
 import {
-	type BackgroundModelSettings,
 	DEFAULT_USER_GROUP_CONFIG,
+	type DefaultModelSettings,
 	type MapSettings,
 	type McpChartEmbedStoredConfig,
 	type McpMapEmbedStoredConfig,
@@ -15,6 +15,8 @@ import {
 	type StoredUserGroupSsoMappings,
 } from '@nao/shared';
 import type { DisplaySettings } from '@nao/shared/date';
+import { STORY_APP_KINDS, STORY_STATE_SCOPES } from '@nao/shared/story-app';
+import type { StoryThemePair } from '@nao/shared/story-theme';
 import type {
 	AnalyticsEventMetadata,
 	CitationData,
@@ -28,8 +30,12 @@ import {
 	BUDGET_PERIODS,
 	FOLDER_SYSTEM_TYPE,
 	FOLDER_VISIBILITY,
+	MEMBER_BUDGET_PERIODS,
 	NOTIFICATION_CATEGORIES,
 	SHARE_VISIBILITY,
+	STORY_ACTIONS,
+	STORY_FORMATS,
+	STORY_SOURCES,
 	USER_ROLES,
 } from '@nao/shared/types';
 import { type ProviderMetadata } from 'ai';
@@ -52,6 +58,7 @@ import {
 
 import { AgentSettings } from '../types/agent-settings';
 import { AUTOMATION_RUN_STATUSES, AutomationIntegrationConfig, AutomationIntegrationResult } from '../types/automation';
+import { BILLING_STATUSES } from '../types/billing';
 import { ForkMetadata, MESSAGE_SOURCES, StopReason, ToolState, UIMessagePartType } from '../types/chat';
 import {
 	CONTEXT_RECOMMENDATION_CATEGORIES,
@@ -180,12 +187,43 @@ export const organization = pgTable('organization', {
 	googleClientId: text('google_client_id'),
 	googleClientSecret: text('google_client_secret'),
 	googleAuthDomains: text('google_auth_domains'), // comma-separated list
+	bypassBilling: boolean('bypass_billing').default(false).notNull(),
 
 	createdAt: timestamp('created_at').defaultNow().notNull(),
 	updatedAt: timestamp('updated_at')
 		.defaultNow()
 		.$onUpdate(() => new Date())
 		.notNull(),
+});
+
+export const organizationBilling = pgTable('organization_billing', {
+	orgId: text('org_id')
+		.primaryKey()
+		.references(() => organization.id, { onDelete: 'cascade' }),
+	billingPlan: text('billing_plan'),
+	billingStatus: text('billing_status', { enum: BILLING_STATUSES }),
+	trialStartedAt: timestamp('trial_started_at'),
+	trialEndsAt: timestamp('trial_ends_at'),
+	stripeCustomerId: text('stripe_customer_id').unique(),
+	stripeSubscriptionId: text('stripe_subscription_id').unique(),
+	stripePriceId: text('stripe_price_id'),
+	currentPeriodStartsAt: timestamp('current_period_starts_at'),
+	currentPeriodEndsAt: timestamp('current_period_ends_at'),
+	cancellationScheduled: boolean('cancellation_scheduled'),
+	hasDefaultPaymentMethod: boolean('has_default_payment_method'),
+	billingAccessEndsAt: timestamp('billing_access_ends_at'),
+	billingUpdatedAt: timestamp('billing_updated_at'),
+	billingSyncToken: text('billing_sync_token'),
+});
+
+export const stripeWebhookEvent = pgTable('stripe_webhook_event', {
+	id: text('id').primaryKey(),
+	type: text('type').notNull(),
+	stripeObjectId: text('stripe_object_id'),
+	livemode: boolean('livemode').notNull(),
+	receivedAt: timestamp('received_at').defaultNow().notNull(),
+	processedAt: timestamp('processed_at'),
+	lastError: text('last_error'),
 });
 
 export const orgMember = pgTable(
@@ -229,7 +267,7 @@ export const project = pgTable(
 		mcpEndpointSettings: jsonb('mcp_endpoint_settings').$type<McpEndpointSettings>(),
 		displaySettings: jsonb('display_settings').$type<DisplaySettings>(),
 		mapSettings: jsonb('map_settings').$type<MapSettings>(),
-		defaultModels: jsonb('default_models').$type<BackgroundModelSettings>(),
+		defaultModels: jsonb('default_models').$type<DefaultModelSettings>(),
 		rowSecurity: jsonb('row_security').$type<StoredProjectRowSecurity>(),
 
 		createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -338,6 +376,7 @@ export const chatMessage = pgTable(
 	},
 	(table) => [
 		index('chat_message_chatId_idx').on(table.chatId),
+		index('chat_message_chatId_createdAt_idx').on(table.chatId, table.createdAt),
 		index('chat_message_createdAt_idx').on(table.createdAt),
 		index('chat_message_versionGroupId_idx').on(table.versionGroupId),
 		index('chat_message_senderUserId_idx').on(table.senderUserId),
@@ -561,6 +600,66 @@ export const projectProviderBudget = pgTable(
 	],
 );
 
+export const projectMemberBudgetSettings = pgTable(
+	'project_member_budget_settings',
+	{
+		projectId: text('project_id')
+			.primaryKey()
+			.references(() => project.id, { onDelete: 'cascade' }),
+		period: text('period', { enum: MEMBER_BUDGET_PERIODS }).notNull(),
+		defaultLimitUsd: integer('default_limit_usd').default(0).notNull(),
+		createdAt: timestamp('created_at').defaultNow().notNull(),
+		updatedAt: timestamp('updated_at')
+			.defaultNow()
+			.$onUpdate(() => new Date())
+			.notNull(),
+	},
+	(t) => [
+		check(
+			'member_budget_period_valid',
+			sql`${t.period} IN (${sql.raw(MEMBER_BUDGET_PERIODS.map((p) => `'${p}'`).join(', '))})`,
+		),
+	],
+);
+
+export const projectMemberBudget = pgTable(
+	'project_member_budget',
+	{
+		projectId: text('project_id')
+			.notNull()
+			.references(() => project.id, { onDelete: 'cascade' }),
+		userId: text('user_id')
+			.notNull()
+			.references(() => user.id, { onDelete: 'cascade' }),
+		limitUsd: integer('limit_usd').notNull(),
+		createdAt: timestamp('created_at').defaultNow().notNull(),
+		updatedAt: timestamp('updated_at')
+			.defaultNow()
+			.$onUpdate(() => new Date())
+			.notNull(),
+	},
+	(t) => [primaryKey({ columns: [t.projectId, t.userId] }), index('project_member_budget_userId_idx').on(t.userId)],
+);
+
+export const projectGroupBudget = pgTable(
+	'project_group_budget',
+	{
+		groupId: text('group_id')
+			.primaryKey()
+			.references(() => userGroup.id, { onDelete: 'cascade' }),
+		projectId: text('project_id')
+			.notNull()
+			.references(() => project.id, { onDelete: 'cascade' }),
+		limitUsd: integer('limit_usd').notNull(),
+		createdAt: timestamp('created_at').defaultNow().notNull(),
+		updatedAt: timestamp('updated_at')
+			.defaultNow()
+			.$onUpdate(() => new Date())
+			.notNull(),
+	},
+	(t) => [index('project_group_budget_projectId_idx').on(t.projectId)],
+);
+
 export const budgetNotification = pgTable(
 	'budget_notification',
 	{
@@ -579,6 +678,24 @@ export const budgetNotification = pgTable(
 		index('budget_notification_projectId_idx').on(t.projectId),
 		unique('budget_notification_project_provider_scope_period').on(t.projectId, t.provider, t.scope, t.periodStart),
 	],
+);
+
+export const memberBudgetNotification = pgTable(
+	'member_budget_notification',
+	{
+		id: text('id')
+			.$defaultFn(() => crypto.randomUUID())
+			.primaryKey(),
+		projectId: text('project_id')
+			.notNull()
+			.references(() => project.id, { onDelete: 'cascade' }),
+		userId: text('user_id')
+			.notNull()
+			.references(() => user.id, { onDelete: 'cascade' }),
+		periodStart: timestamp('period_start').notNull(),
+		createdAt: timestamp('created_at').defaultNow().notNull(),
+	},
+	(t) => [unique('member_budget_notification_project_user_period').on(t.projectId, t.userId, t.periodStart)],
 );
 
 export const sharedChat = pgTable(
@@ -886,9 +1003,6 @@ export const contextRecommendationLinkedFeedback = pgTable(
 	],
 );
 
-export const STORY_ACTIONS = ['create', 'update', 'replace'] as const;
-export const STORY_SOURCES = ['assistant', 'user'] as const;
-
 export const story = pgTable(
 	'story',
 	{
@@ -900,12 +1014,15 @@ export const story = pgTable(
 		userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
 		slug: text('slug').notNull(),
 		title: text('title').notNull(),
+		format: text('format', { enum: STORY_FORMATS }).default('classic').notNull(),
 		isLive: boolean('is_live').default(false).notNull(),
 		isLiveTextDynamic: boolean('is_live_text_dynamic').default(true).notNull(),
 		cacheSchedule: text('cache_schedule'),
 		cacheScheduleDescription: text('cache_schedule_description'),
 		scheduledJobId: text('scheduled_job_id').references(() => scheduledJob.id, { onDelete: 'set null' }),
 		archivedAt: timestamp('archived_at'),
+		certifiedAt: timestamp('certified_at'),
+		certifiedBy: text('certified_by').references(() => user.id, { onDelete: 'set null' }),
 		createdAt: timestamp('created_at').defaultNow().notNull(),
 		updatedAt: timestamp('updated_at')
 			.defaultNow()
@@ -946,6 +1063,67 @@ export const storyVersion = pgTable(
 	(t) => [
 		index('story_version_storyId_idx').on(t.storyId),
 		unique('story_version_story_version_unique').on(t.storyId, t.version),
+	],
+);
+
+export const storyBundle = pgTable('story_bundle', {
+	storyVersionId: text('story_version_id')
+		.primaryKey()
+		.references(() => storyVersion.id, { onDelete: 'cascade' }),
+	kind: text('kind', { enum: STORY_APP_KINDS }).notNull(),
+	bundle: text('bundle'),
+	pageShell: text('page_shell'),
+	bundleError: text('bundle_error'),
+	builtAt: timestamp('built_at').defaultNow().notNull(),
+});
+
+export const storyFileBlob = pgTable('story_file_blob', {
+	contentHash: text('content_hash').primaryKey(),
+	content: text('content').notNull(),
+	size: integer('size').notNull(),
+	createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+export const storyFile = pgTable(
+	'story_file',
+	{
+		id: text('id')
+			.$defaultFn(() => crypto.randomUUID())
+			.primaryKey(),
+		storyVersionId: text('story_version_id')
+			.notNull()
+			.references(() => storyVersion.id, { onDelete: 'cascade' }),
+		path: text('path').notNull(),
+		contentHash: text('content_hash')
+			.notNull()
+			.references(() => storyFileBlob.contentHash),
+		createdAt: timestamp('created_at').defaultNow().notNull(),
+	},
+	(t) => [
+		index('story_file_storyVersionId_idx').on(t.storyVersionId),
+		unique('story_file_version_path_unique').on(t.storyVersionId, t.path),
+	],
+);
+
+export const storyDraftFile = pgTable(
+	'story_draft_file',
+	{
+		id: text('id')
+			.$defaultFn(() => crypto.randomUUID())
+			.primaryKey(),
+		storyId: text('story_id')
+			.notNull()
+			.references(() => story.id, { onDelete: 'cascade' }),
+		path: text('path').notNull(),
+		content: text('content').notNull(),
+		updatedAt: timestamp('updated_at')
+			.defaultNow()
+			.$onUpdate(() => new Date())
+			.notNull(),
+	},
+	(t) => [
+		index('story_draft_file_storyId_idx').on(t.storyId),
+		unique('story_draft_file_story_path_unique').on(t.storyId, t.path),
 	],
 );
 
@@ -1007,6 +1185,37 @@ export const storyDataCache = pgTable('story_data_cache', {
 	analysisResults: jsonb('analysis_results').$type<Record<string, string>>(),
 	cachedAt: timestamp('cached_at').defaultNow().notNull(),
 });
+
+export const storyAppState = pgTable(
+	'story_app_state',
+	{
+		id: text('id')
+			.$defaultFn(() => crypto.randomUUID())
+			.primaryKey(),
+		storyId: text('story_id')
+			.notNull()
+			.references(() => story.id, { onDelete: 'cascade' }),
+		scope: text('scope', { enum: STORY_STATE_SCOPES }).notNull(),
+		userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
+		key: text('key').notNull(),
+		value: jsonb('value').$type<unknown>().notNull(),
+		updatedBy: text('updated_by').references(() => user.id, { onDelete: 'set null' }),
+		updatedAt: timestamp('updated_at')
+			.defaultNow()
+			.$onUpdate(() => new Date())
+			.notNull(),
+	},
+	(t) => [
+		index('story_app_state_storyId_idx').on(t.storyId),
+		uniqueIndex('story_app_state_project_key_unique')
+			.on(t.storyId, t.key)
+			.where(sql`scope = 'project'`),
+		uniqueIndex('story_app_state_user_key_unique')
+			.on(t.storyId, t.userId, t.key)
+			.where(sql`scope = 'user'`),
+		check('story_app_state_user_scope', sql`(scope = 'user') = (user_id IS NOT NULL)`),
+	],
+);
 
 export const ACTIVITY_TYPES = [
 	'context.pulled',
@@ -1420,6 +1629,26 @@ export const oauthConsent = pgTable(
 			.notNull(),
 	},
 	(t) => [index('oauth_consent_clientId_idx').on(t.clientId), index('oauth_consent_userId_idx').on(t.userId)],
+);
+
+export const projectStoryTheme = pgTable(
+	'project_story_theme',
+	{
+		id: text('id')
+			.$defaultFn(() => crypto.randomUUID())
+			.primaryKey(),
+		projectId: text('project_id')
+			.notNull()
+			.references(() => project.id, { onDelete: 'cascade' }),
+		version: integer('version').notNull(),
+		theme: jsonb('theme').$type<StoryThemePair>(),
+		enabled: boolean('enabled').default(false).notNull(),
+		createdAt: timestamp('created_at').defaultNow().notNull(),
+	},
+	(t) => [
+		index('project_story_theme_projectId_idx').on(t.projectId),
+		unique('project_story_theme_project_version_unique').on(t.projectId, t.version),
+	],
 );
 
 export const brandingConfig = pgTable('branding_config', {

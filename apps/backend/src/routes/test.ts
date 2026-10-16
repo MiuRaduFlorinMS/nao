@@ -43,7 +43,7 @@ export const testRoutes = async (app: App) => {
 				body: z.object({
 					prompt: z.string(),
 					model: llmSelectedModelSchema,
-					sql: z.string(),
+					sql: z.string().optional(),
 					databaseId: z.string().optional(),
 					meta: z
 						.object({
@@ -125,6 +125,7 @@ async function buildVerificationToolContext(projectId: string, userId: string): 
 		warehouseTableAccess: contextAccess.warehouseTableAccess,
 		warehouseRowSecurity: contextAccess.warehouseRowSecurity,
 		docsContextAccess: contextAccess.docsContextAccess,
+		filesContextAccess: contextAccess.filesContextAccess,
 		userGroupFeatures: contextAccess.userGroupFeatures,
 		userRulesGroupAccess: contextAccess.userRulesGroupAccess,
 		queryResults: new Map(),

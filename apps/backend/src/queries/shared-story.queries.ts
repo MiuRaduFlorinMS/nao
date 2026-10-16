@@ -1,9 +1,12 @@
 import { extractQueryIds } from '@nao/shared/story-segments';
-import { and, count, desc, eq, isNull, max, or, type SQL, sql } from 'drizzle-orm';
+import type { StoryFormat } from '@nao/shared/types';
+import { aliasedTable, and, count, desc, eq, isNull, max, or, type SQL, sql } from 'drizzle-orm';
 
 import s, { type DBSharedStory } from '../db/abstractSchema';
 import { db } from '../db/db';
 import * as executeSqlQueries from './execute-sql.queries';
+
+const storyCertifier = aliasedTable(s.user, 'story_certifier');
 
 export type SharedStoryWithLatest = DBSharedStory & {
 	updatedAt: Date;
@@ -11,9 +14,12 @@ export type SharedStoryWithLatest = DBSharedStory & {
 	chatId: string | null;
 	slug: string;
 	title: string;
+	format: StoryFormat;
 	code: string;
 	version: number;
 	isLive: boolean;
+	certifiedAt: Date | null;
+	certifiedByName: string | null;
 	sharedWithCount: number;
 	sharedWithGroupCount: number;
 };
@@ -68,6 +74,11 @@ export async function createSharedStory(
 
 export async function getSharedStory(id: string): Promise<SharedStoryWithLatest | null> {
 	const [row] = await querySharedStories(eq(s.sharedStory.id, id));
+	return row ?? null;
+}
+
+export async function getSharedStoryByStoryId(storyId: string): Promise<SharedStoryWithLatest | null> {
+	const [row] = await querySharedStories(eq(s.sharedStory.storyId, storyId));
 	return row ?? null;
 }
 
@@ -164,17 +175,6 @@ export async function getSharedStoryInfo(
 		.select({ id: s.sharedStory.id, visibility: s.sharedStory.visibility })
 		.from(s.sharedStory)
 		.where(and(eq(s.sharedStory.storyId, storyId), eq(s.sharedStory.projectId, projectId)))
-		.limit(1)
-		.execute();
-
-	return row ?? null;
-}
-
-export async function getSharedStoryVisibilityById(sharedStoryId: string): Promise<{ visibility: string } | null> {
-	const [row] = await db
-		.select({ visibility: s.sharedStory.visibility })
-		.from(s.sharedStory)
-		.where(eq(s.sharedStory.id, sharedStoryId))
 		.limit(1)
 		.execute();
 
@@ -314,15 +314,19 @@ function querySharedStories(whereCondition: SQL): Promise<SharedStoryWithLatest[
 			chatId: s.story.chatId,
 			slug: s.story.slug,
 			title: s.story.title,
+			format: s.story.format,
 			code: s.storyVersion.code,
 			version: s.storyVersion.version,
 			isLive: s.story.isLive,
+			certifiedAt: s.story.certifiedAt,
+			certifiedByName: storyCertifier.name,
 			sharedWithCount: sql<number>`coalesce(${accessCounts.cnt}, 0)`,
 			sharedWithGroupCount: sql<number>`coalesce(${groupAccessCounts.cnt}, 0)`,
 		})
 		.from(s.sharedStory)
 		.innerJoin(s.story, eq(s.sharedStory.storyId, s.story.id))
 		.innerJoin(s.user, eq(s.sharedStory.userId, s.user.id))
+		.leftJoin(storyCertifier, eq(s.story.certifiedBy, storyCertifier.id))
 		.innerJoin(latestVersions, eq(s.story.id, latestVersions.storyId))
 		.innerJoin(
 			s.storyVersion,

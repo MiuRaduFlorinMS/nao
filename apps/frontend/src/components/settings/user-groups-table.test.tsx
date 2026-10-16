@@ -5,6 +5,7 @@ import {
 	DEFAULT_TOOL_CALL_DENSITY_POLICY,
 	EMPTY_DATABASE_CONTEXT_ACCESS,
 	EMPTY_DOCS_CONTEXT_ACCESS,
+	EMPTY_FILES_CONTEXT_ACCESS,
 	EMPTY_PROJECT_ROW_SECURITY,
 	EMPTY_USER_GROUP_SSO_MAPPINGS,
 } from '@nao/shared';
@@ -28,6 +29,7 @@ import type { ComponentProps, MouseEventHandler, ReactNode } from 'react';
 
 const mocks = vi.hoisted(() => ({
 	useLicenseFeatures: vi.fn(),
+	useCustomStoriesEnabled: vi.fn(() => false),
 	useQuery: vi.fn(),
 	useMutation: vi.fn(),
 	invalidateQueries: vi.fn(),
@@ -38,6 +40,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@/hooks/use-license', () => ({ useLicenseFeatures: mocks.useLicenseFeatures }));
+vi.mock('@/hooks/use-custom-stories-enabled', () => ({ useCustomStoriesEnabled: mocks.useCustomStoriesEnabled }));
 vi.mock('@tanstack/react-query', () => ({
 	useQuery: mocks.useQuery,
 	useQueryClient: () => ({ invalidateQueries: mocks.invalidateQueries }),
@@ -65,22 +68,45 @@ vi.mock('@tanstack/react-router', () => ({
 		</a>
 	),
 }));
+vi.mock('@/lib/auth-client', () => ({
+	useSession: () => ({ data: { user: { id: 'admin-id' } } }),
+}));
 vi.mock('@/main', () => ({
 	trpc: {
+		account: {
+			resetPassword: { mutationOptions: vi.fn() },
+		},
 		authConfig: {
 			microsoft: { isSetup: { queryOptions: vi.fn(() => ({ queryKey: ['microsoft-config'] })) } },
 			oidc: { getConfig: { queryOptions: vi.fn(() => ({ queryKey: ['oidc-config'] })) } },
+			sso: { getStatus: { queryOptions: vi.fn(() => ({ queryKey: ['sso-status'] })) } },
 		},
 		contextExplorer: {
 			readFile: { queryOptions: vi.fn(() => ({ queryKey: ['rules-file'] })) },
 		},
 		project: {
 			getDatabaseObjects: { queryKey: vi.fn(() => ['database-objects']) },
+			listAllUsersWithRoles: { queryKey: vi.fn(() => ['project-members']) },
+			removeProjectMember: { mutationOptions: vi.fn() },
+		},
+		system: {
+			getPublicConfig: { queryOptions: vi.fn(() => ({ queryKey: ['system-config'] })) },
+		},
+		user: {
+			addUserToProject: { mutationOptions: vi.fn() },
+			modify: { mutationOptions: vi.fn() },
+		},
+		memberBudget: {
+			getSettings: { queryOptions: vi.fn(() => ({ queryKey: ['member-budget-settings'] })) },
+			getOverview: { queryOptions: vi.fn(() => ({ queryKey: ['member-budget-overview'] })) },
+			getForMember: { queryOptions: vi.fn(() => ({ queryKey: ['member-budget-for-member'] })) },
+			setPersonalBudget: { mutationOptions: vi.fn() },
 		},
 		userGroup: {
 			overview: { queryOptions: vi.fn(), queryKey: vi.fn(() => ['overview']) },
 			contextCatalog: { queryOptions: vi.fn(() => ({ queryKey: ['context-catalog'] })) },
 			docsContextCatalog: { queryOptions: vi.fn(() => ({ queryKey: ['docs-context-catalog'] })) },
+			filesContextCatalog: { queryOptions: vi.fn(() => ({ queryKey: ['files-context-catalog'] })) },
 			rowSecurity: {
 				queryOptions: vi.fn(() => ({ queryKey: ['row-security'] })),
 				queryKey: vi.fn(() => ['row-security']),
@@ -230,6 +256,7 @@ const allUsers = {
 	toolCallDensityPolicy: DEFAULT_TOOL_CALL_DENSITY_POLICY,
 	databaseAccess: { mode: 'all' as const, strict: false },
 	docsAccess: ALL_DOCS_CONTEXT_ACCESS,
+	filesAccess: { mode: 'all' as const },
 	ssoMappings: EMPTY_USER_GROUP_SSO_MAPPINGS,
 };
 const analysts = {
@@ -239,6 +266,7 @@ const analysts = {
 	isDefault: false,
 	databaseAccess: { ...EMPTY_DATABASE_CONTEXT_ACCESS, strict: false },
 	docsAccess: EMPTY_DOCS_CONTEXT_ACCESS,
+	filesAccess: EMPTY_FILES_CONTEXT_ACCESS,
 };
 const rowSecurityIdentity = {
 	databaseType: 'duckdb',
@@ -285,6 +313,7 @@ const overview = {
 };
 
 beforeEach(() => {
+	mocks.useCustomStoriesEnabled.mockReturnValue(false);
 	mocks.mutate.mockReset();
 	mocks.mutateAsync.mockReset();
 	mocks.invalidateQueries.mockReset();
@@ -315,11 +344,13 @@ beforeEach(() => {
 							? { version: 1, tables: [] }
 							: queryKey === 'rules-file'
 								? { content: '', hash: 'rules-hash' }
-								: queryKey === 'context-catalog'
-									? { syncState: 'ready', objects: [] }
-									: queryKey === 'docs-context-catalog'
-										? { syncState: 'ready', entries: [] }
-										: overview,
+								: queryKey === 'member-budget-overview'
+									? { period: 'month', defaultLimitUsd: 0, groups: [], members: [] }
+									: queryKey === 'context-catalog'
+										? { syncState: 'ready', objects: [] }
+										: queryKey === 'docs-context-catalog'
+											? { syncState: 'ready', entries: [] }
+											: overview,
 		};
 	});
 	mocks.useMutation.mockReturnValue({
@@ -405,10 +436,10 @@ describe('UserGroupsTable', () => {
 		expect(screen.getByRole('row', { name: /Analysts/ })).toBeTruthy();
 		expect(screen.getByText('Group access')).toBeTruthy();
 		expect(
-			screen.getByText('Configure the features, database tables, and docs each group can access.'),
+			screen.getByText('Configure the features, database tables, docs, and project files each group can access.'),
 		).toBeTruthy();
-		expect(screen.getByText('No features · All tables · Not strict · All docs')).toBeTruthy();
-		expect(screen.getByText('No features · No tables · Not strict · No docs')).toBeTruthy();
+		expect(screen.getByText('No features · All tables · Not strict · All docs · All files')).toBeTruthy();
+		expect(screen.getByText('No features · No tables · Not strict · No docs · No files')).toBeTruthy();
 		expect(screen.getByRole('button', { name: 'Create group' })).toBeTruthy();
 	});
 
@@ -664,6 +695,7 @@ describe('UserGroupsTable', () => {
 		]);
 		expect(screen.getByRole('tab', { name: 'Users' }).getAttribute('aria-selected')).toBe('true');
 		expect(screen.getByRole('columnheader', { name: 'User' })).toBeTruthy();
+		expect(screen.getByRole('button', { name: 'Add member' })).toBeTruthy();
 		expect(screen.getByText('Project Team')).toBeTruthy();
 		expect(screen.getByText('Organisation Members')).toBeTruthy();
 		expect(screen.getByText('Project User')).toBeTruthy();
@@ -773,9 +805,9 @@ describe('UserGroupsTable', () => {
 
 		expect(table.classList.contains('table-fixed')).toBe(true);
 		expect(table.classList.contains('min-w-3xl')).toBe(true);
-		expect(headers[0]?.classList.contains('w-[38%]')).toBe(true);
+		expect(headers[0]?.classList.contains('w-[36%]')).toBe(true);
 		expect(headers[1]?.classList.contains('w-1/5')).toBe(true);
-		expect(headers[2]?.classList.contains('w-[42%]')).toBe(true);
+		expect(headers[2]?.classList.contains('w-[38%]')).toBe(true);
 		expect(projectUserCells[2]?.classList.contains('overflow-hidden')).toBe(true);
 		expect(groupsButton.classList.contains('w-full')).toBe(true);
 		expect(groupsButton.classList.contains('min-w-0')).toBe(true);
@@ -896,7 +928,12 @@ describe('UserGroupEditor', () => {
 	it('shows the active editor tab', () => {
 		renderEditor();
 
-		expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Features', 'Context', 'Security']);
+		expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
+			'Features',
+			'Context',
+			'Security',
+			'Budget',
+		]);
 		expect(screen.getByRole('tab', { name: 'Features' }).getAttribute('aria-selected')).toBe('true');
 		expect(screen.getByRole('heading', { name: 'Allowed features' })).toBeTruthy();
 		expect(screen.queryByText('Context permissions')).toBeNull();
@@ -1639,6 +1676,35 @@ describe('UserGroupEditor', () => {
 		expect(screen.getByRole('button', { name: 'Save' })).toBeTruthy();
 	});
 
+	it('keeps Custom stories unavailable until Stories is granted', () => {
+		mocks.useCustomStoriesEnabled.mockReturnValue(true);
+		renderEditor('features', vi.fn(), { ...analysts, featureGrants: [] });
+		const customStories = screen.getByRole('button', { name: /^Custom stories\./ }) as HTMLButtonElement;
+
+		expect(customStories.disabled).toBe(true);
+		expect(customStories.title).toBe('Requires Stories.');
+
+		fireEvent.click(screen.getByRole('button', { name: /^Stories\./ }));
+
+		expect((screen.getByRole('button', { name: /^Custom stories\./ }) as HTMLButtonElement).disabled).toBe(false);
+	});
+
+	it('removes Custom stories when Stories is unchecked', () => {
+		mocks.useCustomStoriesEnabled.mockReturnValue(true);
+		renderEditor('features', vi.fn(), { ...analysts, featureGrants: ['storyCreation', 'customStoryCreation'] });
+
+		fireEvent.click(screen.getByRole('button', { name: /^Stories\./ }));
+
+		const customStories = screen.getByRole('button', { name: /^Custom stories\./ });
+		expect(customStories.getAttribute('aria-pressed')).toBe('false');
+	});
+
+	it('hides Custom stories while the instance does not offer them', () => {
+		renderEditor('features');
+
+		expect(screen.queryByRole('button', { name: /^Custom stories\./ })).toBeNull();
+	});
+
 	it('shows actions immediately for a new group with save disabled', () => {
 		renderEditor('features', vi.fn(), 'new');
 
@@ -1703,6 +1769,7 @@ describe('UserGroupEditor', () => {
 					{ kind: 'file', path: 'legal/terms.md' },
 				],
 			},
+			filesAccess: EMPTY_FILES_CONTEXT_ACCESS,
 		};
 
 		expect(
@@ -1772,7 +1839,12 @@ describe('UserGroupUserDetail', () => {
 		const unrelatedGroup = { ...analysts, id: 'finance', name: 'Finance' };
 		renderUserDetail({ groups: [allUsers, analysts, unrelatedGroup] });
 
-		expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Features', 'Context', 'Security']);
+		expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
+			'Features',
+			'Context',
+			'Security',
+			'Budget',
+		]);
 		expect(screen.getByRole('heading', { name: 'Project User' })).toBeTruthy();
 		expect(screen.getByText('project@example.com')).toBeTruthy();
 		expect(screen.getByText('Active')).toBeTruthy();
@@ -1781,7 +1853,7 @@ describe('UserGroupUserDetail', () => {
 		expect(screen.getAllByText('Analysts').length).toBeGreaterThan(0);
 		expect(screen.queryByText('Finance')).toBeNull();
 		expect(screen.queryByText('Default')).toBeNull();
-		expect(screen.getByText('1 feature · 0 tables · 0 docs · Strict')).toBeTruthy();
+		expect(screen.getByText('1 feature · 0 tables · 0 docs · 0 files · Strict')).toBeTruthy();
 
 		const stories = screen.getByRole('article', { name: /Stories.*Allowed/ });
 		const automations = screen.getByRole('article', { name: /Automations.*Not allowed/ });
@@ -1818,16 +1890,17 @@ describe('UserGroupUserDetail', () => {
 			contextObjects,
 			docsEntries,
 			effectiveAccess: {
-				features: { storyCreation: true, automationCreation: true },
+				features: { storyCreation: true, customStoryCreation: false, automationCreation: true },
 				toolCallDensityPolicy: { defaultDensity: 'detailed', canChange: false },
 				databaseAccess: { mode: 'all', strict: false },
 				docsAccess: { mode: 'all' },
+				filesAccess: { mode: 'all' },
 				rowPolicies: [],
 			},
 		});
 
-		expect(screen.getByText('2 features · 2 tables · 2 docs · Not strict')).toBeTruthy();
-		expect(screen.queryByText(/All tables|All docs/)).toBeNull();
+		expect(screen.getByText('2 features · 2 tables · 2 docs · 0 files · Not strict')).toBeTruthy();
+		expect(screen.queryByText(/All tables|All docs|All files/)).toBeNull();
 	});
 
 	it('hides the access summary when context is not synced', () => {
@@ -1838,7 +1911,7 @@ describe('UserGroupUserDetail', () => {
 		});
 
 		expect(screen.getAllByText('Not synced')).toHaveLength(2);
-		expect(screen.queryByText('1 feature · 0 tables · 0 docs · Strict')).toBeNull();
+		expect(screen.queryByText('1 feature · 0 tables · 0 docs · 0 files · Strict')).toBeNull();
 	});
 
 	it('shows only allowed context and static dynamic patterns', () => {
@@ -1857,7 +1930,7 @@ describe('UserGroupUserDetail', () => {
 			contextObjects,
 			docsEntries,
 			effectiveAccess: {
-				features: { storyCreation: true, automationCreation: false },
+				features: { storyCreation: true, customStoryCreation: false, automationCreation: false },
 				toolCallDensityPolicy: { defaultDensity: 'compact', canChange: true },
 				databaseAccess: {
 					mode: 'restricted',
@@ -1874,13 +1947,14 @@ describe('UserGroupUserDetail', () => {
 					patterns: ['public.o*'],
 				},
 				docsAccess: { mode: 'restricted', grants: [{ kind: 'file', path: 'finance/kpis.md' }] },
+				filesAccess: EMPTY_FILES_CONTEXT_ACCESS,
 				rowPolicies: [],
 			},
 		});
 
 		expect(screen.getByText('Specific selection')).toBeTruthy();
 		expect(screen.getByText('Strict')).toBeTruthy();
-		expect(screen.getByText('2 tables · 1 doc')).toBeTruthy();
+		expect(screen.getByText('2 tables · 1 doc · 0 files')).toBeTruthy();
 		expect(screen.queryByRole('checkbox')).toBeNull();
 		expect(screen.queryByRole('switch')).toBeNull();
 		expect(screen.queryByRole('button', { name: /Everything|Specific selection/ })).toBeNull();
@@ -1907,17 +1981,18 @@ describe('UserGroupUserDetail', () => {
 			contextObjects,
 			docsEntries,
 			effectiveAccess: {
-				features: { storyCreation: false, automationCreation: false },
+				features: { storyCreation: false, customStoryCreation: false, automationCreation: false },
 				toolCallDensityPolicy: { defaultDensity: 'detailed', canChange: false },
 				databaseAccess: { mode: 'all', strict: false },
 				docsAccess: { mode: 'all' },
+				filesAccess: { mode: 'all' },
 				rowPolicies: [],
 			},
 		});
 
 		expect(screen.getByText('Everything')).toBeTruthy();
 		expect(screen.getByText('Not strict')).toBeTruthy();
-		expect(screen.getByText('1 table · 1 doc')).toBeTruthy();
+		expect(screen.getByText('1 table · 1 doc · 0 files')).toBeTruthy();
 		fireEvent.click(screen.getByRole('button', { name: 'Expand app/public folder' }));
 		fireEvent.click(screen.getByRole('button', { name: 'Expand docs folder' }));
 		expect(screen.getByText('users')).toBeTruthy();
@@ -1927,10 +2002,13 @@ describe('UserGroupUserDetail', () => {
 			<UserGroupEffectiveContext
 				databaseAccess={{ mode: 'all', strict: true }}
 				docsAccess={{ mode: 'all' }}
+				filesAccess={{ mode: 'all' }}
 				contextObjects={[]}
 				docsEntries={[]}
+				filesEntries={[]}
 				databaseCatalogState='loading'
 				docsCatalogState='error'
+				filesCatalogState='ready'
 			/>,
 		);
 		expect(screen.getByText('Loading...')).toBeTruthy();
@@ -2117,7 +2195,7 @@ describe('UserGroupUserDetail', () => {
 
 		expect(retryDatabase).toHaveBeenCalledOnce();
 		expect(retryDocs).toHaveBeenCalledOnce();
-		expect(screen.queryByText('1 feature · 0 tables · 0 docs · Strict')).toBeNull();
+		expect(screen.queryByText('1 feature · 0 tables · 0 docs · 0 files · Strict')).toBeNull();
 	});
 });
 
@@ -2189,20 +2267,25 @@ function renderUserDetail({
 	activeTab = 'features',
 	contextObjects = [],
 	docsEntries = [],
+	filesEntries = [],
 	databaseSyncState = 'ready',
 	docsSyncState = 'ready',
+	filesSyncState = 'ready',
 	databaseCatalogState = 'ready',
 	docsCatalogState = 'ready',
+	filesCatalogState = 'ready',
 	onRetryDatabaseCatalog,
 	onRetryDocsCatalog,
+	onRetryFilesCatalog,
 	projectRowSecurity = EMPTY_PROJECT_ROW_SECURITY,
 	securityState = 'ready',
 	onRetrySecurity,
 	effectiveAccess = {
-		features: { storyCreation: true, automationCreation: false },
+		features: { storyCreation: true, customStoryCreation: false, automationCreation: false },
 		toolCallDensityPolicy: { defaultDensity: 'compact', canChange: true },
 		databaseAccess: { mode: 'restricted', strict: true, grants: [], patterns: [] },
 		docsAccess: { mode: 'restricted', grants: [] },
+		filesAccess: EMPTY_FILES_CONTEXT_ACCESS,
 		rowPolicies: [],
 	},
 }: {
@@ -2210,12 +2293,16 @@ function renderUserDetail({
 	activeTab?: UserGroupUserDetailTab;
 	contextObjects?: Array<{ databaseType: string; database: string; schema: string; table: string }>;
 	docsEntries?: Array<{ kind: 'folder' | 'file'; path: string }>;
+	filesEntries?: Array<{ kind: 'folder' | 'file'; path: string }>;
 	databaseSyncState?: 'missing' | 'ready';
 	docsSyncState?: 'missing' | 'ready';
+	filesSyncState?: 'missing' | 'ready';
 	databaseCatalogState?: 'loading' | 'error' | 'ready';
 	docsCatalogState?: 'loading' | 'error' | 'ready';
+	filesCatalogState?: 'loading' | 'error' | 'ready';
 	onRetryDatabaseCatalog?: () => void;
 	onRetryDocsCatalog?: () => void;
+	onRetryFilesCatalog?: () => void;
 	projectRowSecurity?: ComponentProps<typeof UserGroupUserDetail>['projectRowSecurity'];
 	securityState?: ComponentProps<typeof UserGroupUserDetail>['securityState'];
 	onRetrySecurity?: () => void;
@@ -2226,13 +2313,17 @@ function renderUserDetail({
 			groups,
 			contextObjects,
 			docsEntries,
+			filesEntries,
 			effectiveAccess,
 			databaseSyncState,
 			docsSyncState,
+			filesSyncState,
 			databaseCatalogState,
 			docsCatalogState,
+			filesCatalogState,
 			onRetryDatabaseCatalog,
 			onRetryDocsCatalog,
+			onRetryFilesCatalog,
 			projectRowSecurity,
 			securityState,
 			onRetrySecurity,
@@ -2253,12 +2344,16 @@ function createUserDetail(
 			effectiveAccess={effectiveAccess}
 			contextObjects={props.contextObjects ?? []}
 			docsEntries={props.docsEntries ?? []}
+			filesEntries={props.filesEntries ?? []}
 			databaseSyncState={props.databaseSyncState ?? 'ready'}
 			docsSyncState={props.docsSyncState ?? 'ready'}
+			filesSyncState={props.filesSyncState ?? 'ready'}
 			databaseCatalogState={props.databaseCatalogState ?? 'ready'}
 			docsCatalogState={props.docsCatalogState ?? 'ready'}
+			filesCatalogState={props.filesCatalogState ?? 'ready'}
 			onRetryDatabaseCatalog={props.onRetryDatabaseCatalog}
 			onRetryDocsCatalog={props.onRetryDocsCatalog}
+			onRetryFilesCatalog={props.onRetryFilesCatalog}
 			projectRowSecurity={props.projectRowSecurity ?? EMPTY_PROJECT_ROW_SECURITY}
 			securityState={props.securityState ?? 'ready'}
 			onRetrySecurity={props.onRetrySecurity}
@@ -2272,10 +2367,11 @@ function createEffectiveAccess(
 	rowPolicies: ComponentProps<typeof UserGroupUserDetail>['effectiveAccess']['rowPolicies'],
 ): ComponentProps<typeof UserGroupUserDetail>['effectiveAccess'] {
 	return {
-		features: { storyCreation: true, automationCreation: false },
+		features: { storyCreation: true, customStoryCreation: false, automationCreation: false },
 		toolCallDensityPolicy: { defaultDensity: 'compact', canChange: true },
 		databaseAccess: { mode: 'all', strict: true },
 		docsAccess: { mode: 'restricted', grants: [] },
+		filesAccess: EMPTY_FILES_CONTEXT_ACCESS,
 		rowPolicies,
 	};
 }

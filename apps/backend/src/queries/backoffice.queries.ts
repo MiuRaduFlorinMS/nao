@@ -51,12 +51,15 @@ export async function listOrganizations(input: SearchPaginationInput) {
 				googleClientId: s.organization.googleClientId,
 				googleClientSecret: s.organization.googleClientSecret,
 				googleAuthDomains: s.organization.googleAuthDomains,
+				bypassBilling: s.organization.bypassBilling,
+				billing: s.organizationBilling,
 				memberCount: memberCounts.count,
 				projectCount: projectCounts.count,
 				createdAt: s.organization.createdAt,
 				updatedAt: s.organization.updatedAt,
 			})
 			.from(s.organization)
+			.leftJoin(s.organizationBilling, eq(s.organizationBilling.orgId, s.organization.id))
 			.leftJoin(memberCounts, eq(memberCounts.orgId, s.organization.id))
 			.leftJoin(projectCounts, eq(projectCounts.orgId, s.organization.id))
 			.where(searchFilter)
@@ -74,6 +77,8 @@ export async function listOrganizations(input: SearchPaginationInput) {
 			slug: row.slug,
 			googleAuthDomains: splitDomains(row.googleAuthDomains),
 			hasGoogleSso: isSet(row.googleClientId) && isSet(row.googleClientSecret),
+			bypassBilling: row.bypassBilling,
+			billing: row.billing,
 			memberCount: Number(row.memberCount ?? 0),
 			projectCount: Number(row.projectCount ?? 0),
 			createdAt: row.createdAt,
@@ -81,16 +86,6 @@ export async function listOrganizations(input: SearchPaginationInput) {
 		})),
 		total: Number(totalRows[0]?.count ?? 0),
 	};
-}
-
-export async function getOrganizationForBackoffice(orgId: string) {
-	const [organization] = await db
-		.select()
-		.from(s.organization)
-		.where(eq(s.organization.id, orgId))
-		.limit(1)
-		.execute();
-	return organization ?? null;
 }
 
 export async function getOrganizationMembers(orgId: string) {

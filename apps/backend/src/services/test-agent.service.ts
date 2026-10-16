@@ -55,7 +55,6 @@ export class TestAgentService extends AgentService {
 			messages: [userMessage],
 			userId,
 			projectId,
-			testMode: true,
 		};
 
 		const agent = await this.create(tempChat, modelSelection);
@@ -78,7 +77,6 @@ export class TestAgentService extends AgentService {
 		if (queryResults.size === 0) {
 			return { data: null, sql: null, error: 'The agent did not run any SQL query.' };
 		}
-
 		const resolvedSelectedModel = await this._getResolvedLlmSelectedModel(projectId, modelSelection);
 		const modelConfig = await this._getModelConfig(projectId, resolvedSelectedModel);
 

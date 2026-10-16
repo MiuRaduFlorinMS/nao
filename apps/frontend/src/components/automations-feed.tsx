@@ -1,3 +1,5 @@
+import { stripAssistantTags } from '@nao/shared';
+import { isBuiltinChartType } from '@nao/shared/chart-types';
 import { Link } from '@tanstack/react-router';
 import {
 	Bell,
@@ -19,10 +21,9 @@ import {
 import { useQuery } from '@tanstack/react-query';
 import { Fragment, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Streamdown } from 'streamdown';
-import { stripAssistantTags } from '@nao/shared';
 import { splitCodeIntoSegments } from '@nao/shared/story-segments';
-import { displayChart } from '@nao/shared/tools';
 import { NOTIFICATION_CATEGORY_LABELS } from '@nao/shared/types';
+import type { displayChart } from '@nao/shared/tools';
 import type { ParsedChartBlock, ParsedMapBlock, ParsedTableBlock } from '@nao/shared/story-segments';
 import type {
 	FeedbackNotificationPayload,
@@ -331,7 +332,7 @@ function getNotificationPresentation(
 						delivery for this story.
 					</p>
 				),
-				preview: <StoryPreview shareId={payload.shareId} onOpen={notification.linkUrl ? onOpen : undefined} />,
+				preview: <StoryPreview storyId={payload.storyId} onOpen={notification.linkUrl ? onOpen : undefined} />,
 			};
 		}
 	}
@@ -503,13 +504,10 @@ function AutomationRunCard({
 	);
 }
 
-function StoryPreview({ shareId, onOpen }: { shareId: string | null; onOpen?: () => void }) {
+function StoryPreview({ storyId, onOpen }: { storyId: string; onOpen?: () => void }) {
 	const [tooltipOpen, setTooltipOpen] = useState(false);
 	const [cursor, setCursor] = useState({ x: 0, y: 0 });
-	const { data, isLoading } = useQuery({
-		...trpc.storyShare.get.queryOptions({ shareId: shareId ?? '' }),
-		enabled: Boolean(shareId),
-	});
+	const { data, isLoading } = useQuery(trpc.storyShare.get.queryOptions({ storyId }));
 
 	const segments = useMemo(() => (data ? splitCodeIntoSegments(data.code) : []), [data]);
 	const queryData = (data?.queryData ?? null) as QueryDataMap | null;
@@ -526,10 +524,6 @@ function StoryPreview({ shareId, onOpen }: { shareId: string | null; onOpen?: ()
 		(map: ParsedMapBlock) => <StoryMapEmbed map={map} queryData={queryData} />,
 		[queryData],
 	);
-
-	if (!shareId) {
-		return null;
-	}
 
 	if (isLoading) {
 		return (
@@ -789,7 +783,7 @@ function ChartSlideshow({ charts }: { charts: AutomationFeedChart[] }) {
 function ChartSlide({ chart }: { chart: AutomationFeedChart }) {
 	const xAxisType = chart.config.x_axis_type === 'number' ? 'number' : 'category';
 	const data = chart.data as Record<string, unknown>[];
-	if (!displayChart.isBuiltinChartType(chart.config.chart_type)) {
+	if (!isBuiltinChartType(chart.config.chart_type)) {
 		return <div className='text-sm text-muted-foreground'>Custom charts are available in web chats only.</div>;
 	}
 

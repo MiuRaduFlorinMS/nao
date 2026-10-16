@@ -1,10 +1,10 @@
 import { useQuery } from '@tanstack/react-query';
-import { useMemo } from 'react';
 import Fuse from 'fuse.js';
+import { useMemo } from 'react';
 
 import type { SettingsSearchEntry } from '@/components/settings-search-index';
-
 import { settingsSearchIndex } from '@/components/settings-search-index';
+import { useLicenseFeatures } from '@/hooks/use-license';
 import { useIsCloud } from '@/hooks/use-nao-mode';
 import { usePermissions } from '@/hooks/use-permissions';
 import { trpc } from '@/main';
@@ -55,6 +55,9 @@ function useVisibleSettingsEntries(): SettingsSearchEntry[] {
 	const isCloud = useIsCloud();
 	const config = useQuery(trpc.system.getPublicConfig.queryOptions());
 	const betaSubagentsEnabled = config.data?.betaSubagentsEnabled === true;
+	const cloudBillingEnabled = config.data?.cloudBillingEnabled === true;
+	const licenseFeatures = useLicenseFeatures();
+	const enabledLicenseFeatures = licenseFeatures.data as Record<string, boolean> | undefined;
 
 	return useMemo(
 		() =>
@@ -62,14 +65,26 @@ function useVisibleSettingsEntries(): SettingsSearchEntry[] {
 				.filter(
 					(entry) =>
 						(!entry.adminOnly || isAdmin) &&
+						(!entry.nonAdminOnly || !isAdmin) &&
+						(!entry.licenseFeature || enabledLicenseFeatures?.[entry.licenseFeature] === true) &&
 						(!entry.orgAdminOnly || isOrgAdmin) &&
 						(!entry.adminOrContextAdmin || isAdmin || isContextAdmin) &&
 						(!entry.cloudHidden || !isCloud) &&
 						(!entry.cloudOnly || isCloud) &&
+						(!entry.cloudBillingOnly || cloudBillingEnabled) &&
 						(!entry.betaSubagentsOnly || betaSubagentsEnabled),
 				)
 				.filter((entry) => !isViewer || viewerVisiblePages.includes(entry.page)),
-		[betaSubagentsEnabled, isAdmin, isCloud, isContextAdmin, isOrgAdmin, isViewer],
+		[
+			betaSubagentsEnabled,
+			cloudBillingEnabled,
+			enabledLicenseFeatures,
+			isAdmin,
+			isCloud,
+			isContextAdmin,
+			isOrgAdmin,
+			isViewer,
+		],
 	);
 }
 

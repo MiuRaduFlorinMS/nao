@@ -1,4 +1,9 @@
-import { resolveWarehouseRowSecurity, type SsoGroupProvider } from '@nao/shared';
+import {
+	ALL_FILES_CONTEXT_ACCESS,
+	EMPTY_FILES_CONTEXT_ACCESS,
+	resolveWarehouseRowSecurity,
+	type SsoGroupProvider,
+} from '@nao/shared';
 import type { UserRole } from '@nao/shared/types';
 import { and, eq, inArray } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
@@ -103,16 +108,17 @@ describe('user group queries', () => {
 			isDefault: true,
 			featureGrants: {
 				version: 2,
-				features: ['storyCreation', 'automationCreation'],
+				features: ['storyCreation', 'customStoryCreation', 'automationCreation'],
 				toolCallDensity: {
 					defaultDensity: 'detailed',
 					canChange: true,
 				},
 			},
 			contextGrants: {
-				version: 4,
+				version: 5,
 				databaseAccess: { mode: 'all', strict: false },
 				docsAccess: { mode: 'all' },
+				filesAccess: ALL_FILES_CONTEXT_ACCESS,
 			},
 		});
 
@@ -121,9 +127,10 @@ describe('user group queries', () => {
 
 		expect(defaultGroup).toMatchObject({
 			name: 'All Users',
-			featureGrants: ['storyCreation', 'automationCreation'],
+			featureGrants: ['storyCreation', 'customStoryCreation', 'automationCreation'],
 			databaseAccess: { mode: 'all', strict: false },
 			docsAccess: { mode: 'all' },
+			filesAccess: ALL_FILES_CONTEXT_ACCESS,
 			toolCallDensityPolicy: {
 				defaultDensity: 'detailed',
 				canChange: true,
@@ -651,6 +658,7 @@ describe('user group queries', () => {
 		expect(group.featureGrants).toEqual([]);
 		expect(group.databaseAccess).toEqual({ mode: 'restricted', strict: false, grants: [], patterns: [] });
 		expect(group.docsAccess).toEqual({ mode: 'restricted', grants: [] });
+		expect(group.filesAccess).toEqual(EMPTY_FILES_CONTEXT_ACCESS);
 		expect(group.toolCallDensityPolicy).toEqual({
 			defaultDensity: 'detailed',
 			canChange: true,
@@ -718,7 +726,7 @@ describe('user group queries', () => {
 			},
 		});
 		expect(storedUpdated.contextGrants).toEqual({
-			version: 4,
+			version: 5,
 			databaseAccess: {
 				mode: 'restricted',
 				strict: false,
@@ -734,6 +742,7 @@ describe('user group queries', () => {
 				patterns: ['public.user*'],
 			},
 			docsAccess: { mode: 'restricted', grants: [] },
+			filesAccess: EMPTY_FILES_CONTEXT_ACCESS,
 		});
 
 		await updateUserGroup(PROJECT_ID, group.id, {
@@ -986,6 +995,7 @@ describe('user group queries', () => {
 	it('resolves every feature for an untouched project', async () => {
 		expect((await resolveUserGroupAccess(PROJECT_ID, DIRECT_USER_ID)).features).toEqual([
 			'storyCreation',
+			'customStoryCreation',
 			'automationCreation',
 		]);
 	});
@@ -1035,6 +1045,7 @@ describe('user group queries', () => {
 			toolCallDensityPolicy: { defaultDensity: 'detailed', canChange: false },
 			databaseAccess: { mode: 'restricted', strict: true, grants: [], patterns: [] },
 			docsAccess: { mode: 'restricted', grants: [] },
+			filesAccess: ALL_FILES_CONTEXT_ACCESS,
 			rowPolicies: [
 				{ version: 1, policies: [] },
 				{ version: 1, policies: [] },
@@ -1053,6 +1064,7 @@ describe('user group queries', () => {
 			toolCallDensityPolicy: { canChange: true },
 			databaseAccess: { mode: 'all' },
 			docsAccess: { mode: 'all' },
+			filesAccess: ALL_FILES_CONTEXT_ACCESS,
 		});
 	});
 

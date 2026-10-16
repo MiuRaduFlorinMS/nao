@@ -60,10 +60,12 @@ import {
 	type TruncationNotice,
 } from '../utils/messaging-provider';
 import { shouldReplyToSlackThreadMessage } from '../utils/slack-reply-policy';
+import { isStoriesPath } from '../utils/story-mount';
 import { toStorageRelativePath } from '../utils/tools';
 import { isEmailDomainAllowed } from '../utils/utils';
-import { agentService } from './agent';
-import { posthog, PostHogEvent } from './posthog';
+import { agentService, defaultAgentToolsExcluding } from './agent';
+import { getAppName } from './branding.service';
+import { assertProjectCloudBillingAccess } from './cloud-billing-access.service';
 import { SlackSocketBridge } from './slack-socket-bridge';
 import { readUserFileBytes } from './storage/user-files';
 import { ensureMessagingProviderUser } from './team-member';
@@ -74,6 +76,8 @@ const SLACK_MENTION_REGEX = /(?:<@|@)([A-Z0-9]+)(?:\|[^>]+)?>?\s*/g;
 const SLACK_USER_MENTION_REGEX = /(^|[^\w<])@([a-zA-Z0-9._-]+)/g;
 const CODE_SPAN_REGEX = /(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]+`)/;
 const RESERVED_SLACK_MENTIONS = new Set(['channel', 'everyone', 'here']);
+/** Every file written to storage is posted to the thread, so edits go through a full `write` that re-sends the new version. */
+const SLACK_EXCLUDED_TOOLS = ['str_replace'];
 
 type SlackReplyMessage = NonNullable<Awaited<ReturnType<WebClient['conversations']['replies']>>['messages']>[number];
 type SlackUser = NonNullable<Awaited<ReturnType<WebClient['users']['list']>>['members']>[number];
@@ -216,7 +220,7 @@ export class ProjectSlackBot {
 			text: formatSlackMessageText(resolvedText),
 			thread_ts: threadTs,
 		};
-		const blocks = buildSlackTableBlocks(resolvedText);
+		const blocks = buildSlackTableBlocks(resolvedText, await getAppName());
 		if (blocks) {
 			(args as { blocks?: unknown }).blocks = blocks;
 		}
@@ -415,7 +419,7 @@ export class ProjectSlackBot {
 		}
 
 		const thread = await this._openDirectMessageThread(userId);
-		const message = buttons.length > 0 ? createNotificationCard(text, buttons) : text;
+		const message = buttons.length > 0 ? createNotificationCard(text, buttons, await getAppName()) : text;
 		const sent = await thread.post(message);
 
 		if (files.length > 0) {
@@ -512,14 +516,7 @@ export class ProjectSlackBot {
 				return;
 			}
 			await feedbackQueries.upsertFeedback({ messageId, vote: 'up' });
-			const completion = this._lastCompletionCard.get(threadId);
-			if (completion) {
-				await this._updateSlackCard(
-					completion.channelId,
-					completion.messageTs,
-					createCompletionCard(completion.chatUrl, 'up', completion.hiddenTables).children,
-				);
-			}
+			await this._updateCompletionCardVote(threadId, 'up');
 		});
 
 		this._bot.onAction('feedback_negative', async (event) => {
@@ -564,16 +561,22 @@ export class ProjectSlackBot {
 				vote: 'down',
 				explanation: event.values['explanation'] || undefined,
 			});
-			const completion = this._lastCompletionCard.get(threadId);
-			if (completion) {
-				await this._updateSlackCard(
-					completion.channelId,
-					completion.messageTs,
-					createCompletionCard(completion.chatUrl, 'down', completion.hiddenTables).children,
-				);
-			}
+			await this._updateCompletionCardVote(threadId, 'down');
 			return { action: 'close' };
 		});
+	}
+
+	private async _updateCompletionCardVote(threadId: string, vote: 'up' | 'down'): Promise<void> {
+		const completion = this._lastCompletionCard.get(threadId);
+		if (!completion) {
+			return;
+		}
+		const appName = await getAppName();
+		await this._updateSlackCard(
+			completion.channelId,
+			completion.messageTs,
+			createCompletionCard(completion.chatUrl, { vote, hiddenTables: completion.hiddenTables, appName }).children,
+		);
 	}
 
 	private _resolveActionThreadId(event: { threadId: string; raw: unknown }): string {
@@ -605,6 +608,13 @@ export class ProjectSlackBot {
 			modelId: undefined,
 			timezone: undefined,
 		};
+
+		try {
+			await assertProjectCloudBillingAccess(this.projectId);
+		} catch (error) {
+			await ctx.thread.post(formatMessagingError(error));
+			return;
+		}
 
 		await this._validateUserAccess(ctx);
 		const activeStream: SlackActiveStream = { agent: null, stopRequested: false };
@@ -698,9 +708,10 @@ export class ProjectSlackBot {
 		const streamState = this._getSlackStreamState(ctx);
 		if (!streamState.payloadRejected) {
 			streamState.payloadRejected = true;
+			const appName = await getAppName();
 			await this._postSlackText(
 				ctx,
-				'This answer is too long to show fully in Slack. Open in nao to read the rest.',
+				`This answer is too long to show fully in Slack. Open in ${appName} to read the rest.`,
 			);
 		}
 
@@ -724,7 +735,7 @@ export class ProjectSlackBot {
 		const args: ChatPostMessageArguments = {
 			channel: channelId,
 			...(threadTs ? { thread_ts: threadTs } : {}),
-			text: buildSlackCardNotificationText(children),
+			text: buildSlackCardNotificationText(children, await getAppName()),
 		};
 		(args as { blocks?: unknown }).blocks = cardToBlockKit(Card({ children }));
 		const result = await this._slackClient.chat.postMessage(args);
@@ -742,7 +753,7 @@ export class ProjectSlackBot {
 		const args: ChatUpdateArguments = {
 			channel: channelId,
 			ts: messageTs,
-			text: buildSlackCardNotificationText(children),
+			text: buildSlackCardNotificationText(children, await getAppName()),
 		};
 		(args as { blocks?: unknown }).blocks = cardToBlockKit(Card({ children }));
 		const result = await this._slackClient.chat.update(args);
@@ -815,6 +826,13 @@ export class ProjectSlackBot {
 				'❌ `/new <question>` is only available in direct messages and private channels. Send `/new` on its own here, or ask your question in a private conversation with nao.',
 				ephemeralOpts,
 			);
+			return;
+		}
+
+		try {
+			await assertProjectCloudBillingAccess(this.projectId);
+		} catch (error) {
+			await event.channel.postEphemeral(event.user, formatMessagingError(error), ephemeralOpts);
 			return;
 		}
 
@@ -1184,20 +1202,12 @@ export class ProjectSlackBot {
 		const chatUrl = new URL(ctx.chatId, this._redirectUrl).toString();
 		const { channelId } = this._getSlackMessageDestination(ctx);
 		const hiddenTables = countHiddenTableNotices(this._getSlackStreamState(ctx).lastDeliveredChildren);
+		const appName = await getAppName();
 		const messageTs = await this._postSlackCard(
 			ctx,
-			createCompletionCard(chatUrl, undefined, hiddenTables).children,
+			createCompletionCard(chatUrl, { hiddenTables, appName }).children,
 		);
 		this._lastCompletionCard.set(ctx.thread.id, { channelId, messageTs, chatUrl, hiddenTables });
-
-		posthog.capture(ctx.user!.id, PostHogEvent.MessageSent, {
-			project_id: this.projectId,
-			chat_id: ctx.chatId,
-			model_id: ctx.modelId,
-			is_new_chat: ctx.isNewChat,
-			source: 'slack',
-			domain_host: new URL(this._redirectUrl).host,
-		});
 	}
 
 	private async _createAgentStream(
@@ -1210,12 +1220,20 @@ export class ProjectSlackBot {
 		const agent = await agentService.create(
 			{ ...chat, userId: ctx.user!.id, projectId: this.projectId },
 			this._modelSelection,
-			{ supportsCustomCharts: false },
+			{
+				billingAccessVerifiedProjectId: this.projectId,
+				supportsCustomCharts: false,
+				tools: defaultAgentToolsExcluding(SLACK_EXCLUDED_TOOLS),
+			},
 		);
 		ctx.modelId = agent.getModelId();
 		return {
 			agent,
-			stream: agent.stream(chat.messages, { provider: 'slack', timezone: ctx.timezone }),
+			stream: agent.stream(chat.messages, {
+				provider: 'slack',
+				timezone: ctx.timezone,
+				tracking: { source: 'slack', isNewChat: ctx.isNewChat, domainHost: new URL(this._redirectUrl).host },
+			}),
 		};
 	}
 
@@ -1397,8 +1415,9 @@ export class ProjectSlackBot {
 		}
 		try {
 			const chatUrl = new URL(ctx.chatId, this._redirectUrl).toString();
+			const appName = await getAppName();
 			this._closeCurrentTextRun(ctx);
-			ctx.blocks.push(...createMapLinkCard(part.input.title, chatUrl));
+			ctx.blocks.push(...createMapLinkCard(part.input.title, chatUrl, appName));
 			await this._editConversationCard(ctx, ctx.blocks);
 		} catch (error) {
 			logger.error(`Map link card failed: ${String(error)}`, {
@@ -1422,6 +1441,9 @@ export class ProjectSlackBot {
 			return;
 		}
 		state.renderedToolCallIds.add(part.toolCallId);
+		if (isStoriesPath(part.output.path)) {
+			return;
+		}
 		try {
 			const content = await readUserFileBytes(
 				{ projectId: this.projectId, userId: ctx.user.id },
@@ -1520,6 +1542,7 @@ export class ProjectSlackBot {
 	private async _sendFinalText(ctx: ConversationContext, activeStream: SlackActiveStream): Promise<void> {
 		const streamState = this._getSlackStreamState(ctx);
 		const chatUrl = new URL(ctx.chatId, this._redirectUrl).toString();
+		const appName = await getAppName();
 		const tableState = createSlackTableRenderState();
 		const replacements: {
 			blockIndex: number;
@@ -1536,6 +1559,7 @@ export class ProjectSlackBot {
 					balanceIncompleteCodeFence: activeStream.stopRequested,
 					truncation: { kind: 'link', url: chatUrl },
 					tableState,
+					appName,
 				}),
 				sourceStart: run.sourceStart,
 				updatesOpenRunCount: false,
@@ -1552,6 +1576,7 @@ export class ProjectSlackBot {
 					balanceIncompleteCodeFence: activeStream.stopRequested,
 					truncation: { kind: 'link', url: chatUrl },
 					tableState,
+					appName,
 				}),
 				sourceStart: streamState.textRunStart,
 				updatesOpenRunCount: ctx.textBlockIndex !== -1,

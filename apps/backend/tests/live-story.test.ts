@@ -64,6 +64,10 @@ vi.mock('../src/services/agent', () => ({
 	MAX_OUTPUT_TOKENS: 4096,
 }));
 
+vi.mock('../src/services/cloud-billing-access.service', () => ({
+	assertProjectCloudBillingAccess: vi.fn(),
+}));
+
 vi.mock('../src/services/local-query.service', () => ({
 	runQueryOnLocalFiles: mocks.runQueryOnLocalFiles,
 }));
@@ -85,11 +89,14 @@ vi.mock('../src/utils/schedule-task', () => ({
 vi.mock('../src/utils/story-query-data', () => ({
 	backfillMissingQueryData: mocks.backfillMissingQueryData,
 	findMissingQueryIds: mocks.findMissingQueryIds,
+	extractCustomStoryQueryIds: () => new Set<string>(),
 }));
 
+import { assertProjectCloudBillingAccess } from '../src/services/cloud-billing-access.service';
 import {
 	createStoryExecutionContext,
 	executeLiveQuery,
+	executeRawSql,
 	getStoryQueryData,
 	refreshStoryData,
 } from '../src/services/live-story';
@@ -115,6 +122,7 @@ describe('live story SQL execution', () => {
 		mocks.getLatestVersionByChatAndSlug.mockResolvedValue({
 			code: '<table query_id="query_admin" />',
 			isLiveTextDynamic: false,
+			format: 'classic',
 		});
 		mocks.getSqlQueriesByIds.mockResolvedValue({});
 		mocks.buildToolContext.mockImplementation(async () => ({
@@ -193,6 +201,7 @@ describe('live story SQL execution', () => {
 					data: [{ chat_id: 'chat-1' }],
 				},
 			},
+			narratives: {},
 		});
 
 		expect(mocks.buildToolContext).not.toHaveBeenCalled();
@@ -208,6 +217,7 @@ describe('live story SQL execution', () => {
 			{
 				query_admin: querySource('SELECT * FROM v_messages', null, true),
 			},
+			{},
 		);
 	});
 
@@ -216,6 +226,7 @@ describe('live story SQL execution', () => {
 		mocks.getLatestVersionByChatAndSlug.mockResolvedValue({
 			code,
 			isLiveTextDynamic: false,
+			format: 'classic',
 		});
 		mocks.getSqlQueriesFromCode.mockResolvedValue({
 			query_warehouse: {
@@ -243,6 +254,10 @@ describe('live story SQL execution', () => {
 			code,
 		});
 
+		expect(mocks.queryAppDb).not.toHaveBeenCalled();
+		expect(assertProjectCloudBillingAccess).toHaveBeenCalledOnce();
+		expect(assertProjectCloudBillingAccess).toHaveBeenCalledWith('project-1');
+		expect(fetchMock).toHaveBeenCalledOnce();
 		expect(mocks.buildToolContext).toHaveBeenCalledWith({
 			projectId: 'project-1',
 			userId: 'owner-1',
@@ -268,12 +283,13 @@ describe('live story SQL execution', () => {
 			{
 				query_warehouse: querySource('SELECT * FROM orders', 'analytics'),
 			},
+			{},
 		);
 	});
 
 	it('refreshes a local query in DuckDB after re-running the warehouse query it reads from', async () => {
 		const code = '<chart query_id="query_local" />';
-		mocks.getLatestVersionByChatAndSlug.mockResolvedValue({ code, isLiveTextDynamic: false });
+		mocks.getLatestVersionByChatAndSlug.mockResolvedValue({ code, isLiveTextDynamic: false, format: 'classic' });
 		mocks.getSqlQueriesFromCode.mockResolvedValue({
 			query_local: {
 				sqlQuery: 'SELECT region, sum(amount) AS total FROM query_upstream GROUP BY region',
@@ -312,6 +328,7 @@ describe('live story SQL execution', () => {
 					data: [{ region: 'EU', total: 10, upstream_seen: true }],
 				},
 			},
+			narratives: {},
 		});
 
 		expect(mocks.getSqlQueriesByIds).toHaveBeenCalledWith('chat-1', new Set(['query_upstream']));
@@ -435,6 +452,122 @@ describe('live story SQL execution', () => {
 			cachedAt: cache.cachedAt,
 			code,
 		});
+	});
+
+	it('does not run warehouse SQL when cloud billing access is restricted', async () => {
+		vi.mocked(assertProjectCloudBillingAccess).mockRejectedValueOnce(new Error('restricted'));
+		const fetchMock = vi.fn();
+		vi.stubGlobal('fetch', fetchMock);
+		const executionContext = await createStoryExecutionContext('chat-1');
+
+		await expect(executeRawSql('SELECT * FROM orders', { executionContext })).rejects.toThrow('restricted');
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it('does not build the story execution context when cloud billing access is restricted', async () => {
+		mocks.getSqlQueriesFromCode.mockResolvedValue({
+			query_warehouse: {
+				sqlQuery: 'SELECT * FROM orders',
+				databaseId: 'analytics',
+				adminMode: false,
+			},
+		});
+		vi.mocked(assertProjectCloudBillingAccess).mockRejectedValueOnce(new Error('restricted'));
+
+		await expect(refreshStoryData('chat-1', 'orders')).rejects.toThrow('restricted');
+		expect(mocks.buildToolContext).not.toHaveBeenCalled();
+	});
+
+	it('serves an expired cache without refreshing when the refresh is deferred', async () => {
+		const code = '<table query_id="query_warehouse" />';
+		const cache = {
+			queryData: {
+				query_warehouse: {
+					columns: ['id'],
+					data: [{ id: 1 }],
+				},
+			},
+			querySources: null,
+			cachedAt: new Date(0),
+		};
+		mocks.getStoryDataCacheByChatAndSlug.mockResolvedValue(cache);
+
+		await expect(
+			getStoryQueryData('chat-1', 'orders', code, true, '* * * * *', { deferRefresh: true }),
+		).resolves.toEqual({
+			queryData: cache.queryData,
+			cachedAt: cache.cachedAt,
+			code,
+			needsRefresh: true,
+		});
+		expect(mocks.getLatestVersionByChatAndSlug).not.toHaveBeenCalled();
+	});
+
+	it('serves the chat data of a never-cached story and leaves its first refresh to the caller', async () => {
+		const code = '<table query_id="query_warehouse" />';
+		const queryData = {
+			query_warehouse: {
+				columns: ['id'],
+				data: [{ id: 1 }],
+			},
+		};
+		mocks.getStoryDataCacheByChatAndSlug.mockResolvedValue(null);
+		mocks.getQueryDataFromCode.mockResolvedValue(queryData);
+
+		await expect(
+			getStoryQueryData('chat-1', 'orders', code, true, null, { deferFirstRefresh: true }),
+		).resolves.toEqual({
+			queryData,
+			cachedAt: null,
+			code,
+			needsRefresh: true,
+		});
+		expect(mocks.getLatestVersionByChatAndSlug).not.toHaveBeenCalled();
+	});
+
+	it('does not defer the refresh after a failure for a story without queries', async () => {
+		const code = '# Just a title';
+		mocks.getStoryDataCacheByChatAndSlug.mockResolvedValue(null);
+		mocks.getLatestVersionByChatAndSlug.mockResolvedValue({ code, isLiveTextDynamic: false, format: 'classic' });
+		mocks.getSqlQueriesFromCode.mockResolvedValue({});
+
+		const result = await getStoryQueryData('chat-1', 'orders', code, true, null, { deferRefresh: true });
+
+		expect(result.needsRefresh).toBeUndefined();
+	});
+
+	it('does not defer the first refresh of a story without queries', async () => {
+		const code = '# Just a title';
+		mocks.getStoryDataCacheByChatAndSlug.mockResolvedValue(null);
+		mocks.getLatestVersionByChatAndSlug.mockResolvedValue({ code, isLiveTextDynamic: false, format: 'classic' });
+		mocks.getSqlQueriesFromCode.mockResolvedValue({});
+
+		await expect(
+			getStoryQueryData('chat-1', 'orders', code, true, null, { deferFirstRefresh: true }),
+		).resolves.toEqual({
+			queryData: null,
+			cachedAt: expect.any(Date),
+			code,
+		});
+		expect(mocks.getLatestVersionByChatAndSlug).toHaveBeenCalled();
+	});
+
+	it('still refreshes an expired cache inline when only the first refresh is deferred', async () => {
+		const code = '<table query_id="query_warehouse" />';
+		mocks.getStoryDataCacheByChatAndSlug.mockResolvedValue({
+			queryData: { query_warehouse: { columns: ['id'], data: [{ id: 1 }] } },
+			querySources: null,
+			cachedAt: new Date(0),
+		});
+		mocks.getLatestVersionByChatAndSlug.mockResolvedValue({ code, isLiveTextDynamic: false, format: 'classic' });
+		mocks.getSqlQueriesFromCode.mockResolvedValue({});
+
+		const result = await getStoryQueryData('chat-1', 'orders', code, true, '* * * * *', {
+			deferFirstRefresh: true,
+		});
+
+		expect(result.needsRefresh).toBeUndefined();
+		expect(mocks.getLatestVersionByChatAndSlug).toHaveBeenCalled();
 	});
 
 	it('falls back to stored data when refresh fails without a cache', async () => {

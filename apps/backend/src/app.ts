@@ -3,16 +3,15 @@ import './instrumentation';
 import formbody from '@fastify/formbody';
 import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
+import { STORY_FRAME_CORS_HEADERS, STORY_FRAME_ORIGIN, STORY_RUNTIME_PATH } from '@nao/shared/story-app';
 import { fastifyTRPCPlugin, FastifyTRPCPluginOptions } from '@trpc/server/adapters/fastify';
-import fastify, { FastifyReply } from 'fastify';
+import fastify, { FastifyReply, FastifyRequest } from 'fastify';
 import fastifyRawBody from 'fastify-raw-body';
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from 'fastify-type-provider-zod';
-import { existsSync } from 'fs';
-import { dirname, join } from 'path';
-import { fileURLToPath } from 'url';
 
-import { env, isCloud } from './env';
-import { AUTOMATION_JOB_NAME, automationHandler } from './handlers/automation.handler';
+import { env, isCloud, isCloudBillingEnabled } from './env';
+import { AUTOMATION_JOB_NAME, automationHandler, resolveAutomationProjectId } from './handlers/automation.handler';
+import { BILLING_LIFECYCLE_JOB_NAME, billingLifecycleHandler } from './handlers/billing-lifecycle.handler';
 import {
 	CONTEXT_BRANCH_CLEANUP_JOB_NAME,
 	contextBranchCleanupHandler,
@@ -21,6 +20,7 @@ import {
 	CONTEXT_RECOMMENDATIONS_JOB_NAME,
 	contextRecommendationsHandler,
 	ensureContextRecommendationsSchedules,
+	resolveContextRecommendationsProjectId,
 } from './handlers/context-recommendations.handler';
 import {
 	INVITATION_CLEANUP_JOB_NAME,
@@ -29,8 +29,18 @@ import {
 } from './handlers/invitation-cleanup.handler';
 import { LOG_CLEANUP_JOB_NAME, logCleanupHandler, runLogCleanup } from './handlers/log-cleanup.handler';
 import { MCP_QUERY_DATA_CLEANUP_JOB_NAME, mcpQueryDataCleanupHandler } from './handlers/mcp-query-data-cleanup.handler';
-import { STORY_DELIVERY_JOB_NAME, storyDeliveryHandler } from './handlers/story-delivery.handler';
-import { STORY_REFRESH_JOB_NAME, storyRefreshHandler } from './handlers/story-refresh.handler';
+import { STORY_BLOB_CLEANUP_JOB_NAME, storyBlobCleanupHandler } from './handlers/story-blob-cleanup.handler';
+import {
+	resolveStoryDeliveryProjectId,
+	STORY_DELIVERY_JOB_NAME,
+	storyDeliveryHandler,
+} from './handlers/story-delivery.handler';
+import {
+	resolveStoryRefreshProjectId,
+	STORY_REFRESH_JOB_NAME,
+	storyRefreshHandler,
+} from './handlers/story-refresh.handler';
+import { STRIPE_WEBHOOK_PROCESS_JOB_NAME, stripeWebhookProcessHandler } from './handlers/stripe-webhook.handler';
 import { flushTelemetry } from './instrumentation';
 import { mcpServerRoutes } from './mcp/routes';
 import { ensureOrganizationSetup } from './queries/organization.queries';
@@ -55,6 +65,7 @@ import { mcpOAuthRoutes } from './routes/mcp-oauth';
 import { notificationUnsubscribeRoutes } from './routes/notification-unsubscribe';
 import { slackRoutes } from './routes/slack';
 import { ssoRoutes } from './routes/sso';
+import { stripeWebhookRoutes } from './routes/stripe-webhook';
 import { teamsRoutes } from './routes/teams';
 import { telegramRoutes } from './routes/telegram';
 import { testRoutes } from './routes/test';
@@ -67,16 +78,14 @@ import { posthog, PostHogEvent } from './services/posthog';
 import { ensureRecurring, registerJob, startScheduler, stopScheduler } from './services/scheduler.service';
 import { slackService } from './services/slack';
 import { seedSlackConfigFromEnv } from './services/slack-env-seed';
+import { validateCloudBillingConfiguration } from './services/stripe.service';
 import { TrpcRouter, trpcRouter } from './trpc/router';
 import { createContext } from './trpc/trpc';
 import { BudgetExceededError, HandlerError } from './utils/error';
 import { closeBrowser } from './utils/headless-browser';
 import { logger } from './utils/logger';
 import { drainInFlightRequests, isDraining, trackInFlightRequests } from './utils/request-drain';
-
-// Get the directory of the current module (works in both dev and compiled)
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+import { FRONTEND_DEV_ORIGIN, staticRoot } from './utils/static-root';
 
 const isDev = env.MODE !== 'prod';
 const HEALTH_PATH = '/api/health';
@@ -251,6 +260,12 @@ app.register(whatsappRoutes, {
 	prefix: '/api/webhooks/whatsapp',
 });
 
+if (isCloudBillingEnabled()) {
+	app.register(stripeWebhookRoutes, {
+		prefix: '/api/billing/stripe/webhook',
+	});
+}
+
 app.register(deployRoutes, {
 	prefix: '/api',
 });
@@ -345,17 +360,6 @@ app.get(HEALTH_PATH, { logLevel: 'silent' }, async (_request, reply) => {
 	return { status: 'ok' };
 });
 
-// Serve frontend static files in production
-// Look for frontend dist in multiple possible locations
-const execDir = dirname(process.execPath); // Directory containing the compiled binary
-const possibleStaticPaths = [
-	join(execDir, 'public'), // Bun compiled: public folder next to binary
-	join(__dirname, 'public'), // When bundled: public folder next to compiled code
-	join(__dirname, '../public'), // Alternative bundled location
-	join(__dirname, '../../frontend/dist'), // Development: relative to backend src
-];
-
-const staticRoot = possibleStaticPaths.find((p) => existsSync(p));
 const isReservedBackendPath = (url: string) => {
 	const pathname = url.split('?', 1)[0];
 	return (
@@ -375,6 +379,20 @@ const isReservedBackendPath = (url: string) => {
 
 console.log('Static root:', staticRoot || 'Not found (API-only mode)');
 
+/** Only the sandboxed custom-story frame (opaque origin) gets CORS access, and only to the story runtime modules. */
+const isStoryFrameRuntimeRequest = (request: FastifyRequest) =>
+	request.headers.origin === STORY_FRAME_ORIGIN && request.url.startsWith(`${STORY_RUNTIME_PATH}/`);
+
+app.addHook('onRequest', async (request, reply) => {
+	if (isStoryFrameRuntimeRequest(request)) {
+		reply.headers(STORY_FRAME_CORS_HEADERS);
+	}
+});
+
+app.options(`${STORY_RUNTIME_PATH}/*`, (_request, reply) => {
+	reply.header('Access-Control-Allow-Methods', 'GET, HEAD').status(204).send();
+});
+
 if (staticRoot) {
 	app.register(fastifyStatic, {
 		root: staticRoot,
@@ -391,16 +409,17 @@ app.setNotFoundHandler((request, reply) => {
 	} else if (staticRoot) {
 		reply.sendFile('index.html');
 	} else if (isDev) {
-		reply.redirect(`http://localhost:3000${request.url}`);
+		reply.redirect(`${FRONTEND_DEV_ORIGIN}${request.url}`);
 	} else {
 		reply.status(404).send({ error: 'Not found' });
 	}
 });
 
 export const startServer = async (opts: { port: number; host: string }) => {
-	if (isCloud) {
-		// TODO: Implement cloud mode
-	} else {
+	if (isCloudBillingEnabled()) {
+		await validateCloudBillingConfiguration();
+	}
+	if (!isCloud) {
 		await ensureOrganizationSetup();
 	}
 	await logLicenseStatus();
@@ -424,15 +443,32 @@ export const startServer = async (opts: { port: number; host: string }) => {
 		uniqueKey: INVITATION_CLEANUP_JOB_NAME,
 	});
 
-	registerJob(AUTOMATION_JOB_NAME, automationHandler);
-	registerJob(STORY_REFRESH_JOB_NAME, storyRefreshHandler);
-	registerJob(STORY_DELIVERY_JOB_NAME, storyDeliveryHandler);
+	registerJob(AUTOMATION_JOB_NAME, automationHandler, { resolveProjectId: resolveAutomationProjectId });
+	registerJob(STORY_REFRESH_JOB_NAME, storyRefreshHandler, { resolveProjectId: resolveStoryRefreshProjectId });
+	registerJob(STORY_DELIVERY_JOB_NAME, storyDeliveryHandler, { resolveProjectId: resolveStoryDeliveryProjectId });
+	if (isCloudBillingEnabled()) {
+		// Process accepted webhooks in the background so Stripe receives an immediate response.
+		registerJob(STRIPE_WEBHOOK_PROCESS_JOB_NAME, stripeWebhookProcessHandler);
+		registerJob(BILLING_LIFECYCLE_JOB_NAME, billingLifecycleHandler);
+		await ensureRecurring({
+			name: BILLING_LIFECYCLE_JOB_NAME,
+			cron: '0 * * * *',
+			uniqueKey: BILLING_LIFECYCLE_JOB_NAME,
+		});
+	}
 
 	registerJob(MCP_QUERY_DATA_CLEANUP_JOB_NAME, mcpQueryDataCleanupHandler);
 	await ensureRecurring({
 		name: MCP_QUERY_DATA_CLEANUP_JOB_NAME,
 		cron: '0 4 * * *',
 		uniqueKey: MCP_QUERY_DATA_CLEANUP_JOB_NAME,
+	});
+
+	registerJob(STORY_BLOB_CLEANUP_JOB_NAME, storyBlobCleanupHandler);
+	await ensureRecurring({
+		name: STORY_BLOB_CLEANUP_JOB_NAME,
+		cron: '30 4 * * *',
+		uniqueKey: STORY_BLOB_CLEANUP_JOB_NAME,
 	});
 
 	registerJob(CONTEXT_BRANCH_CLEANUP_JOB_NAME, contextBranchCleanupHandler);
@@ -443,7 +479,9 @@ export const startServer = async (opts: { port: number; host: string }) => {
 	});
 
 	if (env.BETA_CONTEXT_RECOMMENDATIONS_ENABLED) {
-		registerJob(CONTEXT_RECOMMENDATIONS_JOB_NAME, contextRecommendationsHandler);
+		registerJob(CONTEXT_RECOMMENDATIONS_JOB_NAME, contextRecommendationsHandler, {
+			resolveProjectId: resolveContextRecommendationsProjectId,
+		});
 		try {
 			await ensureContextRecommendationsSchedules();
 		} catch (err) {
