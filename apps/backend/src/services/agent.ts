@@ -428,8 +428,8 @@ export class AgentService {
 }
 
 export const MAX_OUTPUT_TOKENS = 16_000;
-/** Gemini counts thinking against the output envelope, so it needs more room than the default. */
-const GEMINI_MAX_OUTPUT_TOKENS = 30_000;
+/** Gemini counts thinking against the output envelope, so it gets the full output ceiling of current Gemini models. */
+const GEMINI_MAX_OUTPUT_TOKENS = 65_536;
 
 export class AgentManager {
 	private readonly _agent: ToolLoopAgent<never, AgentTools, never>;
