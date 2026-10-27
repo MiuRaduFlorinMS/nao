@@ -534,7 +534,7 @@ const envSchema = rawEnvSchema
 			'CLOUD_GITHUB_PROJECT_PRIVATE_KEY',
 		] as const;
 		const managedGithubIsConfigured = fields.some((field) => !!data[field]);
-		if (data.NAO_MODE !== 'cloud' && !managedGithubIsConfigured) {
+		if (!managedGithubIsConfigured) {
 			return;
 		}
 
@@ -543,10 +543,7 @@ const envSchema = rawEnvSchema
 				ctx.addIssue({
 					code: 'custom',
 					path: [field],
-					message:
-						data.NAO_MODE === 'cloud'
-							? `${field} is required when NAO_MODE=cloud`
-							: `${field} is required when managed GitHub project provisioning is configured`,
+					message: `${field} is required when managed GitHub project provisioning is configured`,
 				});
 			}
 		}

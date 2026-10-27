@@ -21,11 +21,19 @@ describe('managed GitHub environment', () => {
 		__reloadEnvForTesting();
 	});
 
-	it('requires managed GitHub configuration in cloud mode', () => {
+	it('allows cloud mode without managed GitHub configuration', () => {
 		process.env.NAO_MODE = 'cloud';
 		clearManagedGithubEnv();
 
-		expect(() => __reloadEnvForTesting()).toThrow(/CLOUD_GITHUB_PROJECT_ORG.*NAO_MODE=cloud/s);
+		expect(() => __reloadEnvForTesting()).not.toThrow();
+	});
+
+	it('rejects partial managed GitHub configuration in cloud mode', () => {
+		process.env.NAO_MODE = 'cloud';
+		clearManagedGithubEnv();
+		process.env.CLOUD_GITHUB_PROJECT_ORG = 'nao-org';
+
+		expect(() => __reloadEnvForTesting()).toThrow(/CLOUD_GITHUB_PROJECT_APP_ID.*managed GitHub/s);
 	});
 
 	it('rejects partial managed GitHub configuration in self-hosted mode', () => {
