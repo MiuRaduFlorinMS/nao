@@ -1,10 +1,11 @@
 import { documentMediaType, type ImageUploadData } from '@nao/shared/attachments';
 
 import { renderAdminSystemPrompt } from '../components/ai';
+import { renderOnboardingSystemPrompt } from '../components/ai/onboarding-system-prompt';
 import { noProjectMessage } from '../env';
 import * as chatQueries from '../queries/chat.queries';
 import * as imageQueries from '../queries/image.queries';
-import { adminAgentTools, type AgentManager, agentService } from '../services/agent';
+import { adminAgentTools, type AgentManager, agentService, onboardingAgentTools } from '../services/agent';
 import { mcpService } from '../services/mcp';
 import { skillService } from '../services/skill';
 import type { StorageScope } from '../services/storage';
@@ -15,11 +16,14 @@ import { HandlerError } from '../utils/error';
 import { buildImageUrl } from '../utils/image';
 import { isStoragePath, toStorageRelativePath, toStorageVirtualPath } from '../utils/tools';
 
-interface HandleAgentMessageInput extends AgentRequest {
+interface HandleAgentMessageInput extends Omit<AgentRequest, 'mode'> {
+	isOnboarding: boolean;
 	userId: string;
 	projectId: string | undefined;
 	billingAccessVerifiedProjectId?: string;
 	domainHost: string | undefined;
+	projectAccessAlreadyAuthorized?: boolean;
+	unbilledManagedAiUsage?: boolean;
 }
 
 interface HandleAgentMessageResult {
@@ -30,9 +34,28 @@ interface HandleAgentMessageResult {
 	agent: AgentManager;
 }
 
+interface PersistUserMessageInput {
+	userId: string;
+	projectId: string;
+	message: AgentRequestUserMessage;
+	chatId?: string;
+	messageToEditId?: string;
+	source: MessageSource;
+}
+
 export const handleAgentRoute = async (opts: HandleAgentMessageInput): Promise<HandleAgentMessageResult> => {
-	const { userId, message, messageToEditId, model, mentions, projectId, adminMode, billingAccessVerifiedProjectId } =
-		opts;
+	const {
+		userId,
+		message,
+		messageToEditId,
+		model,
+		mentions,
+		projectId,
+		adminMode,
+		billingAccessVerifiedProjectId,
+		isOnboarding,
+		unbilledManagedAiUsage,
+	} = opts;
 
 	if (!projectId) {
 		throw new HandlerError('BAD_REQUEST', noProjectMessage());
@@ -40,47 +63,38 @@ export const handleAgentRoute = async (opts: HandleAgentMessageInput): Promise<H
 
 	await agentService.assertBudget(projectId, model, userId);
 
-	const source: MessageSource = adminMode ? 'admin' : 'web';
-	const scope: StorageScope = { projectId, userId };
-	let chatId = opts.chatId;
-	const isNewChat = !chatId;
-	let newMessageId: string;
-
-	if (!chatId) {
-		const attachmentParts = await buildAttachmentParts(message, scope);
-		const [createdChat, createdMessage] = await createChat(userId, projectId, message, attachmentParts, source);
-		chatId = createdChat.id;
-		newMessageId = createdMessage.id;
-	} else {
-		const { messageId } = await insertOrSupersedeMessage({
-			userId,
-			chatId,
-			message,
-			messageToEditId,
-			source,
-			scope,
-		});
-		newMessageId = messageId;
-	}
-
-	const [chat] = await chatQueries.getChat(chatId);
-	if (!chat) {
-		throw new HandlerError('NOT_FOUND', `Chat with id ${chatId} not found.`);
-	}
+	const source: MessageSource = isOnboarding ? 'onboarding' : adminMode ? 'admin' : 'web';
+	const { chat, chatId, isNewChat, newMessageId } = await persistUserMessage({
+		userId,
+		projectId,
+		message,
+		chatId: opts.chatId,
+		messageToEditId,
+		source,
+	});
 
 	await mcpService.initializeMcpState(projectId);
 	await skillService.initializeSkills(projectId);
 
-	const agent = await agentService.create({ ...chat, userId, projectId }, model, {
-		billingAccessVerifiedProjectId,
-		...(adminMode
+	const agentOptions = isOnboarding
+		? {
+				tools: onboardingAgentTools,
+				systemPrompt: renderOnboardingSystemPrompt(),
+			}
+		: adminMode
 			? {
 					tools: adminAgentTools,
 					systemPrompt: renderAdminSystemPrompt({ timezone: opts.timezone }),
 					adminMode: true,
-					isBudgetChecked: true,
 				}
-			: { isBudgetChecked: true }),
+			: undefined;
+
+	const agent = await agentService.create({ ...chat, userId, projectId }, model, {
+		...agentOptions,
+		billingAccessVerifiedProjectId,
+		isBudgetChecked: true,
+		projectAccessAlreadyAuthorized: opts.projectAccessAlreadyAuthorized,
+		unbilledManagedAiUsage,
 	});
 
 	const isForkedFirstMessage =
@@ -91,6 +105,7 @@ export const handleAgentRoute = async (opts: HandleAgentMessageInput): Promise<H
 	const stream = agent.stream(chat.messages, {
 		mentions,
 		timezone: opts.timezone,
+		source: isOnboarding ? source : undefined,
 		events: {
 			newChat: shouldEmitNewChat
 				? {
@@ -115,6 +130,40 @@ export const handleAgentRoute = async (opts: HandleAgentMessageInput): Promise<H
 		agent,
 	};
 };
+
+async function persistUserMessage({
+	userId,
+	projectId,
+	message,
+	chatId,
+	messageToEditId,
+	source,
+}: PersistUserMessageInput) {
+	const scope: StorageScope = { projectId, userId };
+	const isNewChat = !chatId;
+	let newMessageId: string;
+	if (!chatId) {
+		const attachmentParts = await buildAttachmentParts(message, scope);
+		const [createdChat, createdMessage] = await createChat(userId, projectId, message, attachmentParts, source);
+		chatId = createdChat.id;
+		newMessageId = createdMessage.id;
+	} else {
+		const result = await insertOrSupersedeMessage({
+			userId,
+			chatId,
+			message,
+			messageToEditId,
+			source,
+			scope,
+		});
+		newMessageId = result.messageId;
+	}
+	const [chat] = await chatQueries.getChat(chatId);
+	if (!chat) {
+		throw new HandlerError('NOT_FOUND', `Chat with id ${chatId} not found.`);
+	}
+	return { chat, chatId, isNewChat, newMessageId };
+}
 
 /**
  * Both kinds of attachment become a `file` part, but they get there differently: an image

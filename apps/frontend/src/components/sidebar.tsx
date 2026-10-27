@@ -1,18 +1,11 @@
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useMatchRoute, useNavigate, useRouterState } from '@tanstack/react-router';
-import {
-	ArrowLeftFromLine,
-	ArrowRightToLine,
-	ChevronRight,
-	NewspaperIcon,
-	PlusIcon,
-	SearchIcon,
-	X,
-} from 'lucide-react';
+import { ChevronRight, NewspaperIcon, PanelLeft, PlusIcon, SearchIcon, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { ProjectSwitcher } from './project-selector';
 import { ChatFilterMenu } from './sidebar-chat-filter-menu';
 import { ChatListItem } from './sidebar-chat-list-item';
+import { SidebarBackToApp } from './sidebar-back-to-app';
 import { SidebarCommunity } from './sidebar-community';
 import { SidebarSettingsNav } from './sidebar-settings-nav';
 import { SidebarUserMenu } from './sidebar-user-menu';
@@ -29,23 +22,39 @@ import { useCommandMenuCallback } from '@/contexts/command-menu-callback';
 import { useSidebar } from '@/contexts/sidebar';
 import { brandingAssetUrl, useBranding } from '@/hooks/use-branding';
 import { useChatViewPreferences } from '@/hooks/use-chat-view-preferences';
+import { resetLastAppLocation, useTrackLastAppLocation } from '@/hooks/use-last-app-location';
 import { useIsCloud } from '@/hooks/use-nao-mode';
 import { useProjectSwitch } from '@/hooks/use-project-switch';
 import { useSidebarSectionOpen } from '@/hooks/use-sidebar-section-open';
 import { useTimeAgo } from '@/hooks/use-time-ago';
 import { getActiveProjectId, setActiveProjectId } from '@/lib/active-project';
 import { getShortcutLabel } from '@/lib/keyboard-shortcuts';
+import { SIDE_PANEL_ANIMATION_DURATION, SIDE_PANEL_ANIMATION_EASING } from '@/lib/side-panel';
 import { invalidateStoriesCaches } from '@/lib/stories-cache';
-import { cn, hideIf } from '@/lib/utils';
+import { capitalize, cn, hideIf } from '@/lib/utils';
 import { trpc } from '@/main';
 import { usePermissions } from '@/hooks/use-permissions';
+import { useCanSeeAdvancedSettings } from '@/hooks/use-can-see-advanced-settings';
 import { useUnreadAutomationRunCount, useUnreadCount } from '@/queries/use-notifications';
+import { useSession } from '@/lib/auth-client';
+
+const SIDEBAR_TRANSITION_STYLE: React.CSSProperties = {
+	transitionDuration: `${SIDE_PANEL_ANIMATION_DURATION}ms`,
+	transitionTimingFunction: SIDE_PANEL_ANIMATION_EASING,
+};
 
 export function Sidebar() {
 	const navigate = useNavigate();
 	const queryClient = useQueryClient();
 	const matchRoute = useMatchRoute();
-	const { isCollapsed, isMobile, isMobileOpen, closeMobile, toggle: toggleSidebar } = useSidebar();
+	const {
+		isCollapsed,
+		isMobile,
+		isMobileOpen,
+		closeMobile,
+		toggle: toggleSidebar,
+		expand: expandSidebar,
+	} = useSidebar();
 	const [toggleHintOpen, setToggleHintOpen] = useState(false);
 	const { fire: openCommandMenu } = useCommandMenuCallback();
 	const project = useQuery(trpc.project.getCurrent.queryOptions());
@@ -55,9 +64,10 @@ export function Sidebar() {
 	const branding = useBranding();
 	const customColor = branding.enabled ? branding.brandColor : null;
 	const { isAdmin, isContextAdmin, isOrgAdmin, isViewer } = usePermissions();
+	const canSeeAdvancedSettings = useCanSeeAdvancedSettings();
 	const isCloud = useIsCloud();
 	const betaAutomationsEnabled = config.data?.betaAutomationsEnabled === true;
-	const showAutomations = !isViewer && betaAutomationsEnabled;
+	const showAutomations = project.data != null && !isViewer && betaAutomationsEnabled;
 	const unreadCount = useUnreadCount(project.data?.id).data ?? 0;
 	const unreadAutomationRunCount = useUnreadAutomationRunCount(showAutomations, project.data?.id).data ?? 0;
 	const hasFeedActivity = unreadCount > 0 || unreadAutomationRunCount > 0;
@@ -65,12 +75,19 @@ export function Sidebar() {
 
 	const locationPath = useRouterState({ select: (s) => s.location.pathname });
 	const isSettingsRoute = matchRoute({ to: '/settings', fuzzy: true });
-	const isInSettings = !!isSettingsRoute && !isViewer;
+	const isInSettings = !!isSettingsRoute && (!isViewer || (isCloud && isOrgAdmin));
 	const effectiveIsCollapsed = isMobile ? false : isCollapsed;
+	useTrackLastAppLocation();
 
 	useEffect(() => {
 		setToggleHintOpen(false);
 	}, [effectiveIsCollapsed]);
+
+	useEffect(() => {
+		if (isInSettings) {
+			expandSidebar();
+		}
+	}, [isInSettings, expandSidebar]);
 
 	useEffect(() => {
 		if (isMobile && isMobileOpen) {
@@ -120,7 +137,11 @@ export function Sidebar() {
 	const handleProjectChange = useCallback(
 		async (projectId: string) => {
 			const didSwitch = await switchProject(projectId);
-			if (didSwitch && isMobile) {
+			if (!didSwitch) {
+				return;
+			}
+			resetLastAppLocation();
+			if (isMobile) {
 				closeMobile();
 			}
 		},
@@ -134,10 +155,11 @@ export function Sidebar() {
 				isMobile
 					? 'w-72'
 					: cn(
-							'border-r border-sidebar-border transition-[width,background-color] duration-300',
+							'border-r border-sidebar-border transition-[width,background-color]',
 							effectiveIsCollapsed ? 'w-13' : 'w-72',
 						),
 			)}
+			style={isMobile ? undefined : SIDEBAR_TRANSITION_STYLE}
 		>
 			<div className='p-2 flex flex-col'>
 				<div className='flex items-center relative'>
@@ -187,11 +209,7 @@ export function Sidebar() {
 										className='text-muted-foreground'
 										aria-label='Toggle sidebar'
 									>
-										{effectiveIsCollapsed ? (
-											<ArrowRightToLine className='size-4' />
-										) : (
-											<ArrowLeftFromLine className='size-4' />
-										)}
+										<PanelLeft className='size-4' />
 									</Button>
 								</TooltipTrigger>
 								<TooltipContent side='right'>
@@ -207,17 +225,22 @@ export function Sidebar() {
 					</div>
 				</div>
 				{isInSettings && (
-					<ProjectSwitcher
-						projects={projects.data ?? []}
-						currentProjectId={project.data?.id}
-						onChange={handleProjectChange}
-						variant='sidebar'
-						className={cn(
-							'overflow-hidden transition-[height,margin,opacity,visibility] duration-300',
-							effectiveIsCollapsed ? 'h-0 mt-0' : 'h-[30px] mt-2',
-							hideIf(effectiveIsCollapsed),
-						)}
-					/>
+					<>
+						<div className='pt-4'>
+							<SidebarBackToApp isCollapsed={effectiveIsCollapsed} />
+						</div>
+						<ProjectSwitcher
+							projects={projects.data ?? []}
+							currentProjectId={project.data?.id}
+							onChange={handleProjectChange}
+							variant='sidebar'
+							className={cn(
+								'overflow-hidden transition-[height,margin,opacity,visibility] duration-300',
+								effectiveIsCollapsed ? 'h-0 mt-0' : 'h-[30px] mt-2',
+								hideIf(effectiveIsCollapsed),
+							)}
+						/>
+					</>
 				)}
 				{!isInSettings && (
 					<>
@@ -261,12 +284,14 @@ export function Sidebar() {
 			{isInSettings ? (
 				<SidebarSettingsNav
 					isCollapsed={effectiveIsCollapsed}
+					canSeeAdvancedSettings={canSeeAdvancedSettings}
 					isAdmin={isAdmin}
 					isContextAdmin={isContextAdmin}
 					isViewer={isViewer}
 					isCloud={isCloud}
 					isCloudBillingEnabled={config.data?.cloudBillingEnabled === true}
 					isOrgAdmin={isOrgAdmin}
+					isTrial={project.data === null}
 				/>
 			) : (
 				<>
@@ -283,10 +308,10 @@ export function Sidebar() {
 						groupBy={groupBy}
 						filters={filters}
 						isViewer={isViewer}
+						isTrial={project.isSuccess && project.data === null}
 					/>
 				</>
 			)}
-
 			{!isInSettings && <div className='border-b border-sidebar-border mx-2'></div>}
 
 			<div className={cn('mt-auto transition-[padding] duration-300', effectiveIsCollapsed ? 'p-1' : 'p-2')}>
@@ -399,18 +424,45 @@ function SidebarNav({
 	groupBy,
 	filters,
 	isViewer,
+	isTrial,
 }: {
 	isCollapsed: boolean;
 	groupBy: ChatGroupBy;
 	filters: ChatFilterType[];
 	isViewer: boolean;
+	isTrial: boolean;
 }) {
 	const groupedChats = useQuery({
 		...trpc.chat.listGrouped.queryOptions({ groupBy, filters }),
 		placeholderData: keepPreviousData,
 	});
-	const groups = groupedChats.data?.groups;
-	const isEmpty = groups?.every((group) => group.chats.length === 0);
+	const unfilteredChats = useQuery(trpc.chat.listGrouped.queryOptions({ groupBy: 'none', filters: ['all'] }));
+	const onboardingChat = unfilteredChats.data?.groups
+		.flatMap((group) => group.chats)
+		.find((chat) => chat.isOnboarding);
+	const onboardingChatId = onboardingChat?.id;
+	const activeOnboardingJob = useQuery({
+		...trpc.onboarding.getActiveWarehouseProvisioningJob.queryOptions({
+			onboardingChatId: onboardingChatId ?? '',
+		}),
+		enabled: Boolean(onboardingChatId),
+		refetchInterval: (query) => {
+			const status = query.state.data?.status;
+			return status && status !== 'awaiting_context' ? 2000 : false;
+		},
+		refetchOnWindowFocus: 'always',
+	});
+	const onboardingNeedsAttention = activeOnboardingJob.data?.status === 'awaiting_context';
+
+	const groups = groupedChats.data?.groups.map((group) => ({
+		...group,
+		chats: group.chats.filter((chat) => !(onboardingNeedsAttention && chat.id === onboardingChatId)),
+	}));
+
+	const showAttentionChat = onboardingNeedsAttention ? onboardingChat : undefined;
+	const isEmpty = !showAttentionChat && groups?.every((group) => group.chats.length === 0);
+	const { data: session } = useSession();
+	const username = session?.user?.name;
 	return (
 		<div
 			className={cn(
@@ -418,14 +470,33 @@ function SidebarNav({
 				hideIf(isCollapsed),
 			)}
 		>
+			{showAttentionChat && (
+				<div className='px-2 space-y-1'>
+					<ChatListItem chat={showAttentionChat} needsAttention resumeOnboarding={isTrial} />
+				</div>
+			)}
 			{groups?.map((group) => (
-				<GroupSection key={group.label} group={group} groupBy={groupBy} />
+				<GroupSection
+					key={group.label}
+					group={group}
+					groupBy={groupBy}
+					attentionChatId={onboardingNeedsAttention ? onboardingChatId : undefined}
+					resumeOnboardingChatId={isTrial ? onboardingChatId : undefined}
+				/>
 			))}
 
 			{isEmpty && (
 				<p className='text-sm text-muted-foreground text-center p-4'>
 					{isViewer ? (
 						'No chats shared with you.'
+					) : isTrial ? (
+						<>
+							{username ? `Welcome to nao, ${capitalize(username)}! ` : ''}
+							<br />
+							Your chat history will appear here.
+							<br />
+							Start a new chat!
+						</>
 					) : (
 						<>
 							No chats yet.
@@ -549,7 +620,17 @@ function AutomationListItem({
 
 const GROUP_INITIAL_COUNT = 10;
 
-function GroupSection({ group, groupBy }: { group: ChatGroup; groupBy: ChatGroupBy }) {
+function GroupSection({
+	group,
+	groupBy,
+	attentionChatId,
+	resumeOnboardingChatId,
+}: {
+	group: ChatGroup;
+	groupBy: ChatGroupBy;
+	attentionChatId?: string;
+	resumeOnboardingChatId?: string;
+}) {
 	const { isOpen, toggle } = useSidebarSectionOpen(`section:chat-group:${group.label}`);
 	const [expanded, setExpanded] = useState(false);
 	const hasMore = group.chats.length > GROUP_INITIAL_COUNT;
@@ -575,7 +656,12 @@ function GroupSection({ group, groupBy }: { group: ChatGroup; groupBy: ChatGroup
 						item.kind === 'shared' ? (
 							<SharedChatGroupItem key={`shared-${item.shareId}`} item={item} groupBy={groupBy} />
 						) : (
-							<ChatListItem key={item.id} chat={item} />
+							<ChatListItem
+								key={item.id}
+								chat={item}
+								needsAttention={item.id === attentionChatId}
+								resumeOnboarding={item.id === resumeOnboardingChatId}
+							/>
 						),
 					)}
 

@@ -3,9 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
 	addHook: vi.fn(),
 	assertProjectCloudBillingAccess: vi.fn(),
+	assertUserIsActive: vi.fn(),
 	getChatProjectId: vi.fn(),
 	getUserRoleInProject: vi.fn(),
 	handleAgentRoute: vi.fn(),
+	isOnboardingChat: vi.fn(),
 	post: vi.fn(),
 }));
 
@@ -15,12 +17,16 @@ vi.mock('../src/handlers/agent', () => ({
 vi.mock('../src/middleware/auth', () => ({ authMiddleware: vi.fn() }));
 vi.mock('../src/queries/chat.queries', () => ({
 	getChatProjectId: mocks.getChatProjectId,
+	isOnboardingChat: mocks.isOnboardingChat,
 }));
 vi.mock('../src/queries/project.queries', () => ({
 	getUserRoleInProject: mocks.getUserRoleInProject,
 }));
 vi.mock('../src/services/cloud-billing-access.service', () => ({
 	assertProjectCloudBillingAccess: mocks.assertProjectCloudBillingAccess,
+}));
+vi.mock('../src/services/account-status.service', () => ({
+	assertUserIsActive: mocks.assertUserIsActive,
 }));
 
 import { agentRoutes } from '../src/routes/agent';
@@ -29,6 +35,20 @@ import { AgentService } from '../src/services/agent';
 describe('agent billing access', () => {
 	beforeEach(() => {
 		mocks.assertProjectCloudBillingAccess.mockReset();
+		mocks.assertUserIsActive.mockReset();
+	});
+
+	it('rejects a deactivated user before checking billing', async () => {
+		const service = new AgentService();
+		const deactivatedError = new Error('This account has been deactivated.');
+		mocks.assertUserIsActive.mockRejectedValue(deactivatedError);
+
+		await expect(service.create({ id: 'chat-1', projectId: 'project-1', userId: 'user-1' })).rejects.toBe(
+			deactivatedError,
+		);
+
+		expect(mocks.assertUserIsActive).toHaveBeenCalledWith('user-1');
+		expect(mocks.assertProjectCloudBillingAccess).not.toHaveBeenCalled();
 	});
 
 	it('preserves an existing agent when billing rejects its replacement', async () => {
@@ -86,6 +106,7 @@ describe('agent route billing access', () => {
 		const accessError = new Error('Cloud billing access is restricted');
 		mocks.getChatProjectId.mockResolvedValue('project-1');
 		mocks.getUserRoleInProject.mockResolvedValue('user');
+		mocks.isOnboardingChat.mockResolvedValue(false);
 		mocks.assertProjectCloudBillingAccess.mockRejectedValue(accessError);
 		await agentRoutes({ addHook: mocks.addHook, post: mocks.post } as never);
 		const handler = mocks.post.mock.calls[0][2] as (request: unknown, reply: unknown) => Promise<unknown>;
@@ -97,8 +118,9 @@ describe('agent route billing access', () => {
 					project: { id: 'project-1' },
 					body,
 					headers: {},
+					raw: { once: vi.fn() },
 				},
-				{},
+				{ raw: { once: vi.fn(), writableEnded: false } },
 			),
 		).rejects.toBe(accessError);
 

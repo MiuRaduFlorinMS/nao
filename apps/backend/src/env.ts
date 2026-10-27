@@ -16,6 +16,11 @@ dotenv.config({
 	path: path.join(process.cwd(), '..', '..', '.env'),
 });
 
+const optionalNonEmptyString = z
+	.string()
+	.optional()
+	.transform((value) => value?.trim() || undefined);
+
 const emittedDeprecationWarnings = new Set<string>();
 
 function resolveOidcGroupNaoRoleMapping(
@@ -145,6 +150,11 @@ const baseRawEnvSchema = z.object({
 		.transform((val) => val?.trim() || undefined)
 		.pipe(z.url({ message: 'GITLAB_REDIRECT_URI must be a valid URL' }).optional()),
 
+	CLOUD_GITHUB_PROJECT_ORG: optionalNonEmptyString,
+	CLOUD_GITHUB_PROJECT_APP_ID: optionalNonEmptyString,
+	CLOUD_GITHUB_PROJECT_INSTALLATION_ID: optionalNonEmptyString,
+	CLOUD_GITHUB_PROJECT_PRIVATE_KEY: optionalNonEmptyString,
+
 	AZURE_AD_CLIENT_ID: z.string().optional(),
 	AZURE_AD_CLIENT_SECRET: z.string().optional(),
 	AZURE_AD_TENANT_ID: z.string().optional(),
@@ -240,6 +250,7 @@ const baseRawEnvSchema = z.object({
 		.optional()
 		.transform((val) => val?.trim() || undefined)
 		.pipe(z.string().min(32).optional()),
+	NAO_MANAGED_OPENAI_API_KEY: optionalNonEmptyString,
 	NAO_CORE_VERSION: z.string().optional(),
 	NAO_CONTEXT_SOURCE: z.enum(['local', 'git', 'api']).optional(),
 	NAO_CONTEXT_GIT_URL: z.string().optional(),
@@ -266,11 +277,27 @@ const baseRawEnvSchema = z.object({
 		.string()
 		.optional()
 		.transform((val) => val?.trim() || undefined),
+	STRIPE_CLOUD_TRIAL_PRODUCT_ID: z
+		.string()
+		.optional()
+		.transform((val) => val?.trim() || undefined),
+	STRIPE_CLOUD_TRIAL_PRICE_LOOKUP_KEY: z
+		.string()
+		.optional()
+		.transform((val) => val?.trim() || undefined),
 	STRIPE_CLOUD_MONTHLY_PRICE_LOOKUP_KEY: z
 		.string()
 		.optional()
 		.transform((val) => val?.trim() || undefined),
 	STRIPE_CLOUD_YEARLY_PRICE_LOOKUP_KEY: z
+		.string()
+		.optional()
+		.transform((val) => val?.trim() || undefined),
+	STRIPE_CREDIT_PRODUCT_ID: z
+		.string()
+		.optional()
+		.transform((val) => val?.trim() || undefined),
+	STRIPE_CREDIT_PLATFORM_FEE_PRODUCT_ID: z
 		.string()
 		.optional()
 		.transform((val) => val?.trim() || undefined),
@@ -456,8 +483,12 @@ const envSchema = rawEnvSchema
 				'STRIPE_SECRET_KEY',
 				'STRIPE_WEBHOOK_SECRET',
 				'STRIPE_CLOUD_PRODUCT_ID',
+				'STRIPE_CLOUD_TRIAL_PRODUCT_ID',
+				'STRIPE_CLOUD_TRIAL_PRICE_LOOKUP_KEY',
 				'STRIPE_CLOUD_MONTHLY_PRICE_LOOKUP_KEY',
 				'STRIPE_CLOUD_YEARLY_PRICE_LOOKUP_KEY',
+				'STRIPE_CREDIT_PRODUCT_ID',
+				'STRIPE_CREDIT_PLATFORM_FEE_PRODUCT_ID',
 			] as const) {
 				if (!data[variable]) {
 					ctx.addIssue({
@@ -493,6 +524,31 @@ const envSchema = rawEnvSchema
 				path: ['SLACK_SIGNING_SECRET'],
 				message: 'SLACK_SIGNING_SECRET is required when Slack runs in webhook mode',
 			});
+		}
+	})
+	.superRefine((data, ctx) => {
+		const fields = [
+			'CLOUD_GITHUB_PROJECT_ORG',
+			'CLOUD_GITHUB_PROJECT_APP_ID',
+			'CLOUD_GITHUB_PROJECT_INSTALLATION_ID',
+			'CLOUD_GITHUB_PROJECT_PRIVATE_KEY',
+		] as const;
+		const managedGithubIsConfigured = fields.some((field) => !!data[field]);
+		if (data.NAO_MODE !== 'cloud' && !managedGithubIsConfigured) {
+			return;
+		}
+
+		for (const field of fields) {
+			if (!data[field]) {
+				ctx.addIssue({
+					code: 'custom',
+					path: [field],
+					message:
+						data.NAO_MODE === 'cloud'
+							? `${field} is required when NAO_MODE=cloud`
+							: `${field} is required when managed GitHub project provisioning is configured`,
+				});
+			}
 		}
 	})
 	// Refresh tokens must outlive access tokens, otherwise a client can hold a valid

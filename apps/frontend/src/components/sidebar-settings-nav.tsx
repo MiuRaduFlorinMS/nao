@@ -6,7 +6,8 @@ import { Badge } from '@/components/ui/badge';
 import { useSettingsSearch } from '@/hooks/use-settings-search';
 import { cn, hideIf } from '@/lib/utils';
 
-interface NavContext {
+export interface NavContext {
+	canSeeAdvancedSettings: boolean;
 	isAdmin: boolean;
 	isCloudBillingEnabled: boolean;
 	isContextAdmin: boolean;
@@ -24,10 +25,12 @@ interface NavItem {
 	badge?: string;
 	badgeVariant?: 'new' | 'enterprise';
 	leavesSettings?: boolean;
+	requiresProject?: boolean;
 }
 
 interface NavGroup {
 	label: string;
+	isAdvanced?: boolean;
 	items: NavItem[];
 }
 
@@ -45,6 +48,7 @@ const settingsNavGroups: NavGroup[] = [
 	},
 	{
 		label: 'Project',
+		isAdvanced: true,
 		items: [
 			{
 				label: 'Project Settings',
@@ -61,26 +65,31 @@ const settingsNavGroups: NavGroup[] = [
 				label: 'Users & Groups',
 				to: '/settings/project/user-groups',
 				visible: ({ isViewer }) => !isViewer,
+				requiresProject: true,
 			},
 			{
 				label: 'Agent',
 				to: '/settings/project/agent',
 				visible: ({ isViewer }) => !isViewer,
+				requiresProject: true,
 			},
 			{
 				label: 'Integrations & MCP',
 				to: '/settings/project/integrations',
 				visible: ({ isViewer }) => !isViewer,
+				requiresProject: true,
 			},
 			{
 				label: 'Appearance',
 				to: '/settings/appearance',
 				visible: ({ isViewer }) => !isViewer,
+				requiresProject: true,
 			},
 		],
 	},
 	{
 		label: 'Context',
+		isAdvanced: true,
 		items: [
 			{
 				label: 'Git',
@@ -101,6 +110,7 @@ const settingsNavGroups: NavGroup[] = [
 	},
 	{
 		label: 'Observability',
+		isAdvanced: true,
 		items: [
 			{
 				label: 'Chat with nao data',
@@ -111,14 +121,9 @@ const settingsNavGroups: NavGroup[] = [
 				leavesSettings: true,
 			},
 			{
-				label: 'Usage, costs & replay',
+				label: 'Usage & Costs',
 				to: '/settings/usage',
-				visible: ({ isAdmin }) => isAdmin,
-			},
-			{
-				label: 'Chats replay',
-				to: '/settings/usage',
-				visible: ({ isAdmin, isContextAdmin }) => !isAdmin && isContextAdmin,
+				visible: ({ isAdmin, isContextAdmin }) => isAdmin || isContextAdmin,
 			},
 			{
 				label: 'Server logs',
@@ -129,6 +134,7 @@ const settingsNavGroups: NavGroup[] = [
 	},
 	{
 		label: 'Organization',
+		isAdvanced: true,
 		items: [
 			{
 				label: 'Organization Settings',
@@ -143,7 +149,7 @@ const settingsNavGroups: NavGroup[] = [
 				exact: true,
 			},
 			{
-				label: 'Plan & Billing',
+				label: 'Billing & Credits',
 				to: '/settings/organization/billing',
 				visible: ({ isCloudBillingEnabled, isOrgAdmin }) => isCloudBillingEnabled && isOrgAdmin,
 				exact: true,
@@ -167,22 +173,26 @@ const navRowClassName =
 
 interface SidebarSettingsNavProps {
 	isCollapsed: boolean;
+	canSeeAdvancedSettings: boolean;
 	isAdmin: boolean;
 	isContextAdmin: boolean;
 	isViewer: boolean;
 	isCloud: boolean;
 	isCloudBillingEnabled: boolean;
 	isOrgAdmin: boolean;
+	isTrial: boolean;
 }
 
 export function SidebarSettingsNav({
 	isCollapsed,
+	canSeeAdvancedSettings,
 	isAdmin,
 	isContextAdmin,
 	isViewer,
 	isCloud,
 	isCloudBillingEnabled,
 	isOrgAdmin,
+	isTrial,
 }: SidebarSettingsNavProps) {
 	const navigate = useNavigate();
 	const inputRef = useRef<HTMLInputElement>(null);
@@ -190,6 +200,7 @@ export function SidebarSettingsNav({
 	const [isSearchFocused, setIsSearchFocused] = useState(false);
 
 	const navContext: NavContext = {
+		canSeeAdvancedSettings,
 		isAdmin,
 		isCloudBillingEnabled,
 		isContextAdmin,
@@ -197,12 +208,7 @@ export function SidebarSettingsNav({
 		isOrgAdmin,
 		isViewer,
 	};
-	const navGroups = settingsNavGroups
-		.map((group) => ({
-			...group,
-			items: group.items.filter((item) => item.visible?.(navContext) ?? true),
-		}))
-		.filter((group) => group.items.length > 0);
+	const navGroups = getVisibleSettingsNavGroups(navContext, isTrial);
 
 	useEffect(() => {
 		const handleSlashKey = (e: KeyboardEvent) => {
@@ -391,4 +397,16 @@ export function SidebarSettingsNav({
 			</div>
 		</div>
 	);
+}
+
+export function getVisibleSettingsNavGroups(context: NavContext, isTrial = false): NavGroup[] {
+	return settingsNavGroups
+		.filter((group) => !group.isAdvanced || context.canSeeAdvancedSettings)
+		.map((group) => ({
+			...group,
+			items: group.items.filter(
+				(item) => (!item.requiresProject || !isTrial) && (item.visible?.(context) ?? true),
+			),
+		}))
+		.filter((group) => group.items.length > 0);
 }

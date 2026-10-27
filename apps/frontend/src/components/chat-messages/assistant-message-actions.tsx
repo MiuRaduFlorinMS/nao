@@ -1,8 +1,10 @@
 import { useState } from 'react';
 import { ThumbsUp, ThumbsDown, Copy, Check, Ellipsis, ClipboardCopy, FileText, FileDown, Loader2 } from 'lucide-react';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation } from '@tanstack/react-query';
 import type { UIMessage } from '@nao/backend/chat';
 import type { FormEvent, KeyboardEvent } from 'react';
+import type { Chat } from '@/queries/use-chat-query';
+import { useChatQuery } from '@/queries/use-chat-query';
 import { Button } from '@/components/ui/button';
 import { trpc, trpcClient } from '@/main';
 import { cn } from '@/lib/utils';
@@ -39,7 +41,7 @@ export function AssistantMessageActions({
 	const [exportError, setExportError] = useState<string | null>(null);
 	const { isCopied, copy } = useCopyToClipboard();
 	const getAgentMessages = useAgentMessagesGetter();
-	const { data: chat } = useQuery(trpc.chat.get.queryOptions({ chatId }));
+	const { data: chat } = useChatQuery({ chatId, select: selectChatExportMetadata });
 
 	const chatTitle = chat?.title ?? 'nao chat';
 	const chatMetadata = { title: chatTitle, createdAt: chat?.createdAt, updatedAt: chat?.updatedAt };
@@ -228,6 +230,10 @@ export function AssistantMessageActions({
 	);
 }
 
+function selectChatExportMetadata(chat: Chat) {
+	return { title: chat.title, createdAt: chat.createdAt, updatedAt: chat.updatedAt };
+}
+
 export type FeedbackVote = 'up' | 'down';
 
 interface FeedbackDialogProps {
@@ -236,9 +242,17 @@ interface FeedbackDialogProps {
 	onSubmit: (explanation?: string) => void;
 	isPending: boolean;
 	vote: FeedbackVote;
+	subject?: string;
 }
 
-export function FeedbackDialog({ open, onOpenChange, onSubmit, isPending, vote }: FeedbackDialogProps) {
+export function FeedbackDialog({
+	open,
+	onOpenChange,
+	onSubmit,
+	isPending,
+	vote,
+	subject = 'response',
+}: FeedbackDialogProps) {
 	const [explanation, setExplanation] = useState('');
 	const isPositive = vote === 'up';
 
@@ -269,8 +283,8 @@ export function FeedbackDialog({ open, onOpenChange, onSubmit, isPending, vote }
 					<DialogTitle>{isPositive ? 'What went well?' : 'What went wrong?'}</DialogTitle>
 					<DialogDescription className='text-sm text-muted-foreground font-medium'>
 						{isPositive
-							? 'Help us improve by explaining what worked well with this response.'
-							: 'Help us improve by explaining what was wrong with this response.'}
+							? `Help us improve by explaining what worked well with this ${subject}.`
+							: `Help us improve by explaining what was wrong with this ${subject}.`}
 					</DialogDescription>
 				</DialogHeader>
 

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
 	DEFAULT_USAGE_SEARCH,
@@ -10,8 +10,15 @@ import {
 	validateUsageSearchWithStoredFilters,
 } from './usage-route-search';
 
+const storedValues = new Map<string, string>();
+
 describe('validateUsageSearch', () => {
 	beforeEach(() => {
+		vi.stubGlobal('localStorage', {
+			clear: () => storedValues.clear(),
+			getItem: (key: string) => storedValues.get(key) ?? null,
+			setItem: (key: string, value: string) => storedValues.set(key, value),
+		});
 		localStorage.clear();
 		localStorage.setItem('nao.active-project-id', JSON.stringify('project-a'));
 	});
@@ -26,10 +33,28 @@ describe('validateUsageSearch', () => {
 		expect(validateUsageSearch({ provider: 'toString' }).provider).toBe('all');
 	});
 
-	it('accepts context recommendations as a source', () => {
-		expect(validateUsageSearch({ sources: ['contextRecommendations'] }).sources).toEqual([
+	it('accepts background agent sources', () => {
+		expect(validateUsageSearch({ sources: ['contextRecommendations', 'onboarding'] }).sources).toEqual([
 			'contextRecommendations',
+			'onboarding',
 		]);
+	});
+
+	it('accepts only supported tabs', () => {
+		expect(validateUsageSearch({ tab: 'usage' }).tab).toBe('usage');
+		expect(validateUsageSearch({ tab: 'managed-ai' }).tab).toBeUndefined();
+		expect(validateUsageSearch({ tab: 'wallet' }).tab).toBeUndefined();
+		expect(validateUsageSearch({ tab: 'replay' }).tab).toBeUndefined();
+		expect(validateUsageSearch({ tab: 'other' }).tab).toBeUndefined();
+	});
+
+	it('does not persist the selected tab with project filters', () => {
+		saveUsageFilters({ ...DEFAULT_USAGE_SEARCH, tab: 'usage', provider: 'openai' });
+
+		expect(validateUsageSearchWithStoredFilters({})).toMatchObject({
+			tab: undefined,
+			provider: 'openai',
+		});
 	});
 
 	it('parses the split per user toggle and persists it with the other filters', () => {
@@ -41,6 +66,16 @@ describe('validateUsageSearch', () => {
 		saveUsageFilters({ ...DEFAULT_USAGE_SEARCH, splitByUser: true });
 
 		expect(validateUsageSearchWithStoredFilters({}).splitByUser).toBe(true);
+	});
+
+	it('parses the expand replay toggle without persisting it', () => {
+		expect(validateUsageSearch({}).expandReplay).toBe(false);
+		expect(validateUsageSearch({ expandReplay: true }).expandReplay).toBe(true);
+		expect(validateUsageSearch({ expandReplay: 'true' }).expandReplay).toBe(true);
+
+		saveUsageFilters({ ...DEFAULT_USAGE_SEARCH, expandReplay: true });
+
+		expect(validateUsageSearchWithStoredFilters({}).expandReplay).toBe(false);
 	});
 
 	it('parses the chats search term without persisting it', () => {

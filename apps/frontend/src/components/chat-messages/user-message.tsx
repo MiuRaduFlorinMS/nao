@@ -22,6 +22,7 @@ import { useTimeAgo } from '@/hooks/use-time-ago';
 import { editedMessageIdStore } from '@/stores/chat-edited-message';
 import { trpc } from '@/main';
 import { customStoryMentionOption, storyMentionOption } from '@/components/chat-input-prompt';
+import DiscordIcon from '@/components/icons/discord.svg';
 import MattermostIcon from '@/components/icons/mattermost.svg';
 import SlackIcon from '@/components/icons/slack.svg';
 import TeamsIcon from '@/components/icons/microsoft-teams.svg';
@@ -54,6 +55,7 @@ const MESSAGE_SOURCES = {
 	teams: { icon: <TeamsIcon className='size-4' />, label: 'sent in Teams' },
 	telegram: { icon: <TelegramIcon className='size-4' />, label: 'sent in Telegram' },
 	mattermost: { icon: <MattermostIcon className='size-4' />, label: 'sent in Mattermost' },
+	discord: { icon: <DiscordIcon className='size-4' />, label: 'sent in Discord' },
 	whatsapp: { icon: <WhatsAppIcon className='size-4' />, label: 'sent in WhatsApp' },
 	mcp: { icon: <McpIcon className='size-4' />, label: 'sent via MCP' },
 } as const;
@@ -73,8 +75,15 @@ function MessageSourceBadge({ source }: { source: UIMessage['source'] }) {
 }
 
 function useMentionConfigs(): MessageMentionConfig[] {
-	const { data: skills } = useQuery(trpc.skill.list.queryOptions());
-	const { data: databaseObjects } = useQuery(trpc.project.getDatabaseObjects.queryOptions());
+	const project = useQuery(trpc.project.getCurrent.queryOptions());
+	const hasProject = project.data != null;
+	const skillsQuery = useQuery({ ...trpc.skill.list.queryOptions(), enabled: hasProject });
+	const databaseObjectsQuery = useQuery({
+		...trpc.project.getDatabaseObjects.queryOptions(),
+		enabled: hasProject,
+	});
+	const skills = hasProject ? skillsQuery.data : undefined;
+	const databaseObjects = hasProject ? databaseObjectsQuery.data : undefined;
 
 	return useMemo(() => {
 		const dbOptions: MentionOption[] = (databaseObjects ?? []).map((obj) => ({

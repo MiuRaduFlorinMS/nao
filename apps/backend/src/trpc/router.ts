@@ -28,6 +28,7 @@ import { mcpOAuthClientsRoutes } from './mcp-oauth-clients.routes';
 import { memberBudgetRoutes } from './member-budget.routes';
 import { memoryRoutes } from './memory.routes';
 import { notificationRoutes } from './notification.routes';
+import { onboardingRoutes } from './onboarding.routes';
 import { organizationRoutes } from './organization.routes';
 import { posthogRoutes } from './posthog.routes';
 import { projectRoutes } from './project.routes';
@@ -40,6 +41,7 @@ import { storageRoutes } from './storage.routes';
 import { storyRoutes } from './story.routes';
 import { storyFolderRoutes } from './story-folder.routes';
 import { storyThemeRoutes } from './story-theme.routes';
+import { supportRoutes } from './support.routes';
 import { systemRoutes } from './system.routes';
 import { transcribeRoutes } from './transcribe.routes';
 import { router } from './trpc';
@@ -84,6 +86,7 @@ export const trpcRouter = router({
 	userGroup: userGroupRoutes,
 	memory: memoryRoutes,
 	notification: notificationRoutes,
+	onboarding: onboardingRoutes,
 	organization: organizationRoutes,
 	authConfig: authConfigRoutes,
 	account: accountRoutes,
@@ -92,6 +95,7 @@ export const trpcRouter = router({
 	mcpEndpoint: mcpEndpointRoutes,
 	mcpOAuthClients: mcpOAuthClientsRoutes,
 	sandboxSecret: sandboxSecretRoutes,
+	support: supportRoutes,
 	system: systemRoutes,
 	skill: skillRoutes,
 	transcribe: transcribeRoutes,

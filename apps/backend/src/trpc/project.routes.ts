@@ -10,13 +10,15 @@ import {
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod/v4';
 
-import { getProviderAuth, KNOWN_MODELS } from '../agents/providers';
+import { getProviderAuth, isManagedProvider, KNOWN_MODELS } from '../agents/providers';
 import { getDatabaseObjects } from '../agents/user-rules';
 import { env } from '../env';
 import * as chatQueries from '../queries/chat.queries';
 import * as crQueries from '../queries/context-recommendation.queries';
 import * as mcpEndpointQueries from '../queries/mcp-endpoint.queries';
 import * as projectQueries from '../queries/project.queries';
+import * as discordConfigQueries from '../queries/project-discord-config.queries';
+import * as discordLinkQueries from '../queries/project-discord-link.queries';
 import * as llmConfigQueries from '../queries/project-llm-config.queries';
 import * as mattermostConfigQueries from '../queries/project-mattermost-config.queries';
 import * as savedPromptQueries from '../queries/project-saved-prompt.queries';
@@ -34,11 +36,15 @@ import {
 	MODEL_INTEGRATIONS,
 	updateIntegrationModel,
 } from '../services/default-models.service';
+import { discordService } from '../services/discord';
+import { canUseDiscordInProject, DiscordConnectionError, validateDiscordConnection } from '../services/discord-helpers';
 import { mattermostService } from '../services/mattermost';
 import { MattermostConnectionError, validateMattermostConnection } from '../services/mattermost-helpers';
 import { mcpService } from '../services/mcp';
 import { removeProjectMember } from '../services/membership.service';
 import { posthog, PostHogEvent } from '../services/posthog';
+import { updateProjectEnvVars } from '../services/project.service';
+import { listShareableMembers } from '../services/project-sharing.service';
 import { slackService } from '../services/slack';
 import { listAvailableTranscribeModels as getAvailableTranscribeModels } from '../services/transcribe.service';
 import { isDatabaseObjectAllowed, resolveWarehouseTableAccess } from '../services/user-group-context-access.service';
@@ -65,10 +71,12 @@ import {
 } from '../utils/llm';
 import { extractConfiguredSemanticLayer, extractRequiredEnvVars } from '../utils/nao-config';
 import { findConfigLlmProvider } from '../utils/nao-config-llm';
+import { withQueryResultPreviewsInChat } from '../utils/query-result-preview';
 import { parseAndValidateGeoJson, safeFetch } from '../utils/safe-fetch';
-import { buildCredentialPreviews, previewApiKey } from '../utils/utils';
+import { buildCredentialPreviews, getProcessEnvSourcedVarNames, previewApiKey } from '../utils/utils';
 import {
 	adminProtectedProcedure,
+	advancedSettingsProtectedProcedure,
 	assertCanManageUserAccount,
 	contextAdminProtectedProcedure,
 	projectProtectedProcedure,
@@ -110,6 +118,31 @@ function toIntegrationModelSelection(input: z.infer<typeof integrationModelInput
 const httpUrlSchema = z.url().refine((value) => ['http:', 'https:'].includes(new URL(value).protocol), {
 	message: 'Enter a valid HTTP or HTTPS URL',
 });
+
+function toDiscordConfigResponse(config: discordConfigQueries.DiscordConfig) {
+	return {
+		applicationId: config.applicationId,
+		botTokenPreview: config.botToken.slice(0, 4) + '...' + config.botToken.slice(-4),
+		publicKey: config.publicKey,
+		modelSelection: config.modelSelection,
+		mentionRoleIds: config.mentionRoleIds ?? [],
+		respondToChannelIds: config.respondToChannelIds ?? [],
+		fallbackUserEmail: config.fallbackUserEmail ?? '',
+		hideAnswerLink: config.hideAnswerLink ?? false,
+	};
+}
+
+async function resolveDiscordFallbackUser(projectId: string, email: string) {
+	const user = await userQueries.getUser({ email });
+	if (!user) {
+		throw new TRPCError({ code: 'BAD_REQUEST', message: `No user found with the email ${email}.` });
+	}
+	const role = await projectQueries.getUserRoleInProject(projectId, user.id);
+	if (!canUseDiscordInProject(role)) {
+		throw new TRPCError({ code: 'BAD_REQUEST', message: `${email} does not have access to this project.` });
+	}
+	return user;
+}
 
 async function validateBoundarySource(url: string): Promise<number> {
 	try {
@@ -248,6 +281,9 @@ export const projectRoutes = {
 		)
 		.output(llmConfigSchema.omit({ createdAt: true, updatedAt: true }))
 		.mutation(async ({ ctx, input }) => {
+			if (isManagedProvider(input.provider)) {
+				throw new TRPCError({ code: 'BAD_REQUEST', message: 'The nao-managed provider is configured by nao.' });
+			}
 			const existingConfig = await llmConfigQueries.getProjectLlmConfigByProvider(ctx.project.id, input.provider);
 			const inheritedConfig = existingConfig
 				? null
@@ -448,7 +484,7 @@ export const projectRoutes = {
 		return { success: true };
 	}),
 
-	getTeamsConfig: projectProtectedProcedure.query(async ({ ctx }) => {
+	getTeamsConfig: advancedSettingsProtectedProcedure.query(async ({ ctx }) => {
 		if (!ctx.project) {
 			return { projectConfig: null, projectId: '' };
 		}
@@ -518,7 +554,7 @@ export const projectRoutes = {
 		return { success: true };
 	}),
 
-	getTelegramConfig: projectProtectedProcedure.query(async ({ ctx }) => {
+	getTelegramConfig: advancedSettingsProtectedProcedure.query(async ({ ctx }) => {
 		if (!ctx.project) {
 			return { projectConfig: null, projectId: '' };
 		}
@@ -579,7 +615,7 @@ export const projectRoutes = {
 		return { success: true };
 	}),
 
-	getMattermostConfig: projectProtectedProcedure.query(async ({ ctx }) => {
+	getMattermostConfig: advancedSettingsProtectedProcedure.query(async ({ ctx }) => {
 		if (!ctx.project) {
 			return { projectConfig: null, projectId: '', connected: false };
 		}
@@ -675,6 +711,91 @@ export const projectRoutes = {
 		return { success: true };
 	}),
 
+	getDiscordConfig: advancedSettingsProtectedProcedure.query(async ({ ctx }) => {
+		if (!ctx.project) {
+			return { projectConfig: null, projectId: '', connected: false, webhookUrl: '' };
+		}
+
+		const config = await discordConfigQueries.getProjectDiscordConfig(ctx.project.id);
+		const baseUrl = env.BETTER_AUTH_URL || 'http://localhost:3000';
+		return {
+			projectConfig: config ? toDiscordConfigResponse(config) : null,
+			projectId: ctx.project.id,
+			connected: discordService.getAdapter(ctx.project.id) !== null,
+			webhookUrl: `${baseUrl}/api/webhooks/discord/${ctx.project.id}`,
+		};
+	}),
+
+	upsertDiscordConfig: adminProtectedProcedure
+		.input(
+			z.object({
+				botToken: z.string().trim().min(1),
+				applicationId: z.string().trim().min(1),
+				publicKey: z
+					.string()
+					.trim()
+					.regex(/^[0-9a-f]{64}$/i, 'Enter the 64-character hex public key from the Discord application.'),
+				modelProvider: llmProviderSchema.optional(),
+				modelId: z.string().optional(),
+				mentionRoleIds: z.array(z.string()).optional(),
+				respondToChannelIds: z.array(z.string()).optional(),
+				fallbackUserEmail: z.string().trim().toLowerCase().optional(),
+				hideAnswerLink: z.boolean().optional(),
+			}),
+		)
+		.mutation(async ({ ctx, input }) => {
+			try {
+				await validateDiscordConnection({ botToken: input.botToken });
+			} catch (error) {
+				throw new TRPCError({
+					code: 'BAD_REQUEST',
+					message:
+						error instanceof DiscordConnectionError
+							? error.message
+							: 'Could not verify the Discord connection. Try again.',
+				});
+			}
+
+			const fallbackUser = input.fallbackUserEmail
+				? await resolveDiscordFallbackUser(ctx.project.id, input.fallbackUserEmail)
+				: null;
+			const config = await discordConfigQueries.upsertProjectDiscordConfig({
+				...input,
+				projectId: ctx.project.id,
+				fallbackUserId: fallbackUser?.id,
+				fallbackUserEmail: fallbackUser?.email,
+			});
+			try {
+				await discordService.syncProject(config, ctx.project.id);
+			} catch {
+				throw new TRPCError({
+					code: 'INTERNAL_SERVER_ERROR',
+					message: 'Discord connected, but the bot could not start. Try again.',
+				});
+			}
+
+			posthog.capture(ctx.user.id, PostHogEvent.DiscordConfigured, {
+				project_id: ctx.project.id,
+				modelProvider: input.modelProvider,
+				modelId: input.modelId,
+			});
+
+			return toDiscordConfigResponse(config);
+		}),
+
+	updateDiscordModelConfig: adminProtectedProcedure
+		.input(integrationModelInputSchema)
+		.mutation(({ ctx, input }) =>
+			updateIntegrationModel(ctx.project.id, 'discord', toIntegrationModelSelection(input)),
+		),
+
+	deleteDiscordConfig: adminProtectedProcedure.mutation(async ({ ctx }) => {
+		await discordConfigQueries.deleteProjectDiscordConfig(ctx.project.id);
+		await discordService.stopProject(ctx.project.id);
+		await discordLinkQueries.deleteLinkedDiscordUsers(ctx.project.id);
+		return { success: true };
+	}),
+
 	regenerateMessagingProviderCode: adminProtectedProcedure
 		.input(z.object({ userId: z.string() }))
 		.mutation(async ({ ctx, input }) => {
@@ -704,7 +825,7 @@ export const projectRoutes = {
 		return await userQueries.regenerateMessagingProviderCode(ctx.user.id);
 	}),
 
-	getWhatsappConfig: projectProtectedProcedure.query(async ({ ctx }) => {
+	getWhatsappConfig: advancedSettingsProtectedProcedure.query(async ({ ctx }) => {
 		if (!ctx.project) {
 			return { projectConfig: null, projectId: '' };
 		}
@@ -796,14 +917,14 @@ export const projectRoutes = {
 			return { success: true };
 		}),
 
-	listAllUsersWithRoles: projectProtectedProcedure.query(async ({ ctx }) => {
+	listAllUsersWithRoles: advancedSettingsProtectedProcedure.query(async ({ ctx }) => {
 		if (!ctx.project) {
 			return [];
 		}
 		return projectQueries.listProjectMembersWithRoles(ctx.project.id);
 	}),
 
-	listUsersWithAccess: projectProtectedProcedure.query(async ({ ctx }) => {
+	listUsersWithAccess: advancedSettingsProtectedProcedure.query(async ({ ctx }) => {
 		return projectQueries.listUsersWithProjectAccessDetails(ctx.project.id);
 	}),
 
@@ -818,7 +939,7 @@ export const projectRoutes = {
 			if (!role) {
 				throw new TRPCError({ code: 'FORBIDDEN', message: 'You do not have access to this project.' });
 			}
-			return projectQueries.listUsersWithProjectAccess(projectId);
+			return listShareableMembers(projectId, ctx.user.id);
 		}),
 
 	getKnownModels: publicProcedure.query(() => {
@@ -1147,7 +1268,7 @@ export const projectRoutes = {
 			}
 
 			return {
-				...chat,
+				...withQueryResultPreviewsInChat(chat),
 				ownerId: ownerId ?? null,
 				ownerName,
 				chatOwnerId: ownerId ?? null,
@@ -1186,13 +1307,14 @@ export const projectRoutes = {
 		return {
 			required: requiredVars,
 			values: storedVars,
+			setFromProcessEnv: getProcessEnvSourcedVarNames(requiredVars, storedVars),
 		};
 	}),
 
 	updateEnvVars: adminProtectedProcedure
 		.input(z.object({ envVars: z.record(z.string(), z.string()) }))
 		.mutation(async ({ ctx, input }) => {
-			await projectQueries.updateEnvVars(ctx.project.id, input.envVars);
+			await updateProjectEnvVars(ctx.project.id, input.envVars);
 			void mcpService.refreshProjectConfig(ctx.project.id);
 		}),
 

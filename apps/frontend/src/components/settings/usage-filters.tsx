@@ -20,6 +20,7 @@ import { cn } from '@/lib/utils';
 
 interface UsageFiltersProps {
 	showUsageControls?: boolean;
+	showUserControls?: boolean;
 	provider: LlmProvider | 'all';
 	onProviderChange: (value: LlmProvider | 'all') => void;
 	periodSelection: UsagePeriodSelection;
@@ -43,6 +44,7 @@ interface UsageFiltersProps {
 
 export function UsageFilters({
 	showUsageControls = true,
+	showUserControls = true,
 	provider,
 	onProviderChange,
 	periodSelection,
@@ -63,16 +65,6 @@ export function UsageFilters({
 	splitByUser = false,
 	onSplitByUserChange,
 }: UsageFiltersProps) {
-	const userOptions = (chatFacets?.userNames ?? []).map((name) => ({
-		value: name,
-		label: name,
-		count: chatFacets?.userNameCounts[name],
-	}));
-	const sourceOptions = USAGE_SOURCES.map((value) => ({
-		value,
-		label: sourceLabels[value],
-	}));
-
 	return (
 		<div className='flex flex-wrap items-center gap-2'>
 			{showUsageControls && (
@@ -104,21 +96,15 @@ export function UsageFilters({
 				</>
 			)}
 
-			<MultiSelectFilter
-				label='Source'
-				icon={Radio}
-				options={sourceOptions}
-				selectedValues={selectedSources}
-				onChange={onSelectedSourcesChange}
+			<SourceAndUserFilters
+				chatFacets={chatFacets}
+				selectedUserNames={selectedUserNames}
+				onSelectedUserNamesChange={onSelectedUserNamesChange}
+				selectedSources={selectedSources}
+				onSelectedSourcesChange={onSelectedSourcesChange}
+				showUserControls={showUserControls}
 			/>
-			<MultiSelectFilter
-				label='Users'
-				icon={Users}
-				options={userOptions}
-				selectedValues={selectedUserNames}
-				onChange={onSelectedUserNamesChange}
-			/>
-			{showUsageControls && onSplitByUserChange && (
+			{showUsageControls && showUserControls && onSplitByUserChange && (
 				<ToggleFilter
 					label='Split per user'
 					icon={Split}
@@ -127,6 +113,53 @@ export function UsageFilters({
 				/>
 			)}
 		</div>
+	);
+}
+
+type SourceAndUserFiltersProps = Pick<
+	UsageFiltersProps,
+	'chatFacets' | 'selectedUserNames' | 'onSelectedUserNamesChange' | 'selectedSources' | 'onSelectedSourcesChange'
+> & {
+	showUserControls?: boolean;
+};
+
+export function SourceAndUserFilters({
+	chatFacets,
+	selectedUserNames,
+	onSelectedUserNamesChange,
+	selectedSources,
+	onSelectedSourcesChange,
+	showUserControls = true,
+}: SourceAndUserFiltersProps) {
+	const userOptions = (chatFacets?.userNames ?? []).map((name) => ({
+		value: name,
+		label: name,
+		count: chatFacets?.userNameCounts[name],
+	}));
+	const sourceOptions = USAGE_SOURCES.map((value) => ({
+		value,
+		label: sourceLabels[value],
+	}));
+
+	return (
+		<>
+			<MultiSelectFilter
+				label='Source'
+				icon={Radio}
+				options={sourceOptions}
+				selectedValues={selectedSources}
+				onChange={onSelectedSourcesChange}
+			/>
+			{showUserControls && (
+				<MultiSelectFilter
+					label='Users'
+					icon={Users}
+					options={userOptions}
+					selectedValues={selectedUserNames}
+					onChange={onSelectedUserNamesChange}
+				/>
+			)}
+		</>
 	);
 }
 
@@ -229,10 +262,12 @@ const sourceLabels: Record<UsageSource, string> = {
 	teams: 'Teams',
 	telegram: 'Telegram',
 	mattermost: 'Mattermost',
+	discord: 'Discord',
 	whatsapp: 'WhatsApp',
 	admin: 'Admin mode',
 	mcp: 'MCP',
 	contextRecommendations: 'Context recommendations',
+	onboarding: 'Onboarding',
 };
 
 function sameValues<T extends string>(a: T[], b: T[]): boolean {

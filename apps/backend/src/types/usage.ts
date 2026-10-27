@@ -85,6 +85,7 @@ export interface UserProjectPreferences {
 
 export interface StoredUserPreferences extends UserPreferences {
 	projectPreferences?: Record<string, UserProjectPreferences>;
+	supportRequestSentAt?: number;
 }
 
 export function resolveUsagePeriod(
@@ -204,6 +205,7 @@ export interface UsageRecord {
 	teamsMessageCount: number;
 	telegramMessageCount: number;
 	mattermostMessageCount: number;
+	discordMessageCount: number;
 	whatsappMessageCount: number;
 	adminMessageCount: number;
 	mcpMessageCount: number;
