@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { configDefaults, defineConfig } from 'vitest/config';
@@ -10,6 +11,7 @@ import { configDefaults, defineConfig } from 'vitest/config';
 const sharedSqliteTestFiles = [
 	'tests/context-recommendation-schema.test.ts',
 	'tests/project-accessible-users.test.ts',
+	'tests/project-chats-filters.test.ts',
 	'tests/project-selection.test.ts',
 	'tests/query-app-db.test.ts',
 	'tests/readonly-app-db.test.ts',
@@ -18,6 +20,17 @@ const sharedSqliteTestFiles = [
 ];
 
 export default defineConfig({
+	plugins: [
+		{
+			name: 'raw-markdown',
+			enforce: 'pre',
+			load(id) {
+				if (id.endsWith('.md')) {
+					return `export default ${JSON.stringify(readFileSync(id, 'utf8'))}`;
+				}
+			},
+		},
+	],
 	resolve: {
 		alias: {
 			'bun:sqlite': fileURLToPath(new URL('./tests/stubs/bun-sqlite.ts', import.meta.url)),

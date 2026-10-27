@@ -1,7 +1,7 @@
 export { isPythonAvailable } from './execute-python';
 export { isSandboxAvailable } from './execute-sandboxed-code';
 
-import type { CustomBoundarySet } from '@nao/shared';
+import { ALL_MCP_ACCESS, type CustomBoundarySet, isMcpServerGranted, type McpAccess } from '@nao/shared';
 import { writeFile } from '@nao/shared/tools';
 import type { SemanticLayerMode } from '@nao/shared/types';
 import type { Tool } from 'ai';
@@ -19,13 +19,19 @@ import executePython from './execute-python';
 import executeSandboxedCode from './execute-sandboxed-code';
 import executeSemanticQuery from './execute-semantic-query';
 import executeSql, { localOnlyExecuteSql } from './execute-sql';
+import generateOnboardingRules from './generate-onboarding-rules';
 import grep from './grep';
 import list from './list';
 import loadSkill from './load-skill';
 import { createMcpCallTool } from './mcp-call';
 import { createMcpConnectTool } from './mcp-connect';
+import onboardingAgentPrompt from './onboarding-agent-prompt';
+import onboardingCommand from './onboarding-command';
+import onboardingProgress from './onboarding-progress';
 import read from './read';
 import readQueryResult from './read-query-result';
+import requestWarehouseCredentials from './request-warehouse-credentials';
+import requestWarehouseSelection from './request-warehouse-selection';
 import search from './search';
 import story, { buildStoryToolDescription } from './story';
 import strReplace, { buildStrReplaceToolDescription } from './str-replace';
@@ -52,6 +58,12 @@ export const tools = {
 	grep,
 	list,
 	load_skill: loadSkill,
+	onboarding_agent_prompt: onboardingAgentPrompt,
+	onboarding_command: onboardingCommand,
+	onboarding_progress: onboardingProgress,
+	request_warehouse_credentials: requestWarehouseCredentials,
+	request_warehouse_selection: requestWarehouseSelection,
+	generate_onboarding_rules: generateOnboardingRules,
 	read,
 	search,
 	task,
@@ -68,12 +80,14 @@ export const getTools = (
 	options: {
 		mcpEnabled?: boolean;
 		mcpServers?: string[] | null;
+		/** MCP servers the run's user may reach through their groups; the MCP tools are dropped when none is. */
+		mcpAccess?: McpAccess;
 		excludeFollowUps?: boolean;
+		onboarding?: boolean;
 		/**
-		 * Restricts the built-in tools to this allowlist (by tool name). MCP, python,
-		 * sandboxing and clarification tools are dropped entirely. `extraTools` are
-		 * always kept. Used by focused runs (e.g. context recommendations) that should
-		 * only discover context, not query the warehouse or render charts.
+		 * Restricts generated tools to this allowlist by tool name. `extraTools` are always
+		 * kept. Used by focused runs (e.g. context recommendations) that should only discover
+		 * context, not query the warehouse or render charts.
 		 */
 		builtinToolAllowlist?: string[];
 		/**
@@ -98,12 +112,15 @@ export const getTools = (
 	} = {},
 ) => {
 	const customStoryAuthoring = options.customStoryAuthoring ?? isCustomStoriesEnabled();
-	const configuredServers = new Set(mcpService.getConfiguredServerNames());
+	const mcpAccess = options.mcpAccess ?? ALL_MCP_ACCESS;
+	const grantedServers = new Set(
+		mcpService.getConfiguredServerNames().filter((server) => isMcpServerGranted(mcpAccess, server)),
+	);
 	const includeMcp =
 		options.mcpEnabled !== false &&
 		(options.mcpServers == null
-			? configuredServers.size > 0
-			: options.mcpServers.some((server) => configuredServers.has(server)));
+			? grantedServers.size > 0
+			: options.mcpServers.some((server) => grantedServers.has(server)));
 	const mcpTools: Record<string, Tool> = includeMcp
 		? {
 				mcp_call: createMcpCallTool(options.mcpServers ?? null),
@@ -116,6 +133,12 @@ export const getTools = (
 		execute_sandboxed_code,
 		execute_semantic_query,
 		execute_sql,
+		onboarding_agent_prompt: onboardingAgentPromptTool,
+		onboarding_command: onboardingCommandTool,
+		onboarding_progress: onboardingProgressTool,
+		request_warehouse_credentials: requestWarehouseCredentialsTool,
+		request_warehouse_selection: requestWarehouseSelectionTool,
+		generate_onboarding_rules: generateOnboardingRulesTool,
 		suggest_follow_ups,
 		task: taskTool,
 		write: writeTool,
@@ -139,6 +162,14 @@ export const getTools = (
 
 	const allTools = {
 		...baseTools,
+		...(options.onboarding && {
+			onboarding_agent_prompt: onboardingAgentPromptTool,
+			onboarding_command: onboardingCommandTool,
+			onboarding_progress: onboardingProgressTool,
+			request_warehouse_credentials: requestWarehouseCredentialsTool,
+			request_warehouse_selection: requestWarehouseSelectionTool,
+			generate_onboarding_rules: generateOnboardingRulesTool,
+		}),
 		...mcpTools,
 		...(agentSettings?.experimental?.pythonSandboxing && execute_python && { execute_python }),
 		...(agentSettings?.experimental?.sandboxes && execute_sandboxed_code && { execute_sandboxed_code }),

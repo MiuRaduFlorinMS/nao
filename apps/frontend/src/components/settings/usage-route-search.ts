@@ -8,11 +8,14 @@ import { getActiveProjectId } from '@/lib/active-project';
 
 export type TokenChartDisplayMode = 'tokens' | 'dollars';
 
+export type UsageTab = 'usage';
+
 export type ReplayHighlight = 'tool-error' | 'feedback';
 
 export type ReplayOrigin = 'recommendations';
 
 export type UsageRouteSearch = {
+	tab: UsageTab | undefined;
 	provider: LlmProvider | 'all';
 	periodMode: UsagePeriodPreset | undefined;
 	savedPeriodId: string | undefined;
@@ -23,6 +26,7 @@ export type UsageRouteSearch = {
 	search: string | undefined;
 	splitByUser: boolean;
 	tokenView: TokenChartDisplayMode;
+	expandReplay: boolean;
 	highlight: ReplayHighlight | undefined;
 	targetId: string | undefined;
 	origin: ReplayOrigin | undefined;
@@ -31,6 +35,7 @@ export type UsageRouteSearch = {
 };
 
 export const DEFAULT_USAGE_SEARCH: UsageRouteSearch = {
+	tab: undefined,
 	provider: 'all',
 	periodMode: undefined,
 	savedPeriodId: undefined,
@@ -41,6 +46,7 @@ export const DEFAULT_USAGE_SEARCH: UsageRouteSearch = {
 	search: undefined,
 	splitByUser: false,
 	tokenView: 'tokens',
+	expandReplay: false,
 	highlight: undefined,
 	targetId: undefined,
 	origin: undefined,
@@ -49,6 +55,7 @@ export const DEFAULT_USAGE_SEARCH: UsageRouteSearch = {
 };
 
 const tokenViews = ['tokens', 'dollars'] as const satisfies readonly TokenChartDisplayMode[];
+const usageTabs = ['usage'] as const satisfies readonly UsageTab[];
 const filterSearchKeys = ['provider', 'users', 'feedback', 'tools', 'sources', 'splitByUser'] as const;
 const periodSearchKeys = [
 	'periodMode',
@@ -122,6 +129,7 @@ export function validateUsageSearch(search: Record<string, unknown>): UsageRoute
 	const savedPeriodId = parseSavedPeriodId(search.savedPeriodId) ?? parseSavedPeriodId(search.periodEntryId);
 
 	return {
+		tab: parseOneOf(search.tab, usageTabs),
 		provider: parseProvider(search.provider),
 		periodMode: period.mode,
 		savedPeriodId,
@@ -132,6 +140,7 @@ export function validateUsageSearch(search: Record<string, unknown>): UsageRoute
 		search: parseSearchTerm(search.search),
 		splitByUser: parseBoolean(search.splitByUser),
 		tokenView: parseOneOf(search.tokenView, tokenViews) ?? 'tokens',
+		expandReplay: parseBoolean(search.expandReplay),
 		highlight: parseOneOf(search.highlight, replayHighlights),
 		targetId: typeof search.targetId === 'string' && search.targetId.length > 0 ? search.targetId : undefined,
 		origin: parseOneOf(search.origin, replayOrigins),

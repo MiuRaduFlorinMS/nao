@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentSettings } from '../src/types/agent-settings';
 
+vi.mock('@resvg/resvg-js', () => ({ Resvg: class FakeResvg {} }));
+
 const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
 
 type KvmAccess = 'missing' | 'denied' | 'usable';
@@ -36,7 +38,20 @@ async function loadSandboxModules(kvmAccess: KvmAccess, platform = 'linux') {
 		ExecError: class FakeExecError extends Error {},
 		TimeoutError: class FakeTimeoutError extends Error {},
 	}));
+	vi.doMock('@resvg/resvg-js', () => ({
+		Resvg: class FakeResvg {
+			render() {
+				return { asPng: () => Buffer.from([]) };
+			}
+		},
+	}));
 	vi.doMock('../src/db/db', () => ({ db: {} }));
+	vi.doMock('../src/agents/tools/display-chart', () => ({ default: {} }));
+	vi.doMock('../src/agents/tools/display-map', () => ({ createDisplayMapTool: () => ({}) }));
+	vi.doMock('../src/agents/tools/story', () => ({
+		buildStoryToolDescription: () => 'Story tool',
+		default: {},
+	}));
 
 	const runtime = await import('../src/services/sandbox-runtime');
 	const sandboxTool = await import('../src/agents/tools/execute-sandboxed-code');
@@ -65,6 +80,9 @@ afterEach(() => {
 	vi.doUnmock('@boxlite-ai/boxlite');
 	vi.doUnmock('@resvg/resvg-js');
 	vi.doUnmock('../src/db/db');
+	vi.doUnmock('../src/agents/tools/display-chart');
+	vi.doUnmock('../src/agents/tools/display-map');
+	vi.doUnmock('../src/agents/tools/story');
 });
 
 describe('sandbox runtime host capability', () => {

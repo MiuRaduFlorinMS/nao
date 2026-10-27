@@ -92,6 +92,7 @@ export const contextRecommendationRoutes = {
 		void runContextRecommendations(ctx.project.id, {
 			billingAccessVerifiedProjectId: ctx.project.id,
 			trigger: 'manual',
+			triggeredByUserId: ctx.user.id,
 		}).catch((err) => {
 			logger.error(`Manual context recommendations run failed: ${String(err)}`, { source: 'agent' });
 		});
@@ -117,7 +118,9 @@ export const contextRecommendationRoutes = {
 		return { ...fresh, alreadyTerminal: !cancelled };
 	}),
 
-	listAvailableModels: recommendationsProcedure.query(async ({ ctx }) => getProjectAvailableModels(ctx.project.id)),
+	listAvailableModels: recommendationsProcedure.query(async ({ ctx }) => {
+		return getProjectAvailableModels(ctx.project.id);
+	}),
 
 	getConfig: recommendationsProcedure.query(async ({ ctx }) => {
 		return crQueries.getConfig(ctx.project.id);

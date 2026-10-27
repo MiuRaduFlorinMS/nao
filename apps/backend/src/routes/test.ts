@@ -6,9 +6,10 @@ import { executeQuery } from '../agents/tools/execute-sql';
 import type { App } from '../app';
 import { noProjectMessage } from '../env';
 import { authMiddleware } from '../middleware/auth';
-import { getEnvVars, retrieveProjectById } from '../queries/project.queries';
+import { getUserRoleInProject, retrieveProjectById } from '../queries/project.queries';
 import { hasFeature, LICENSE_FEATURES } from '../services/license.service';
 import { getAzureAccessTokenForUser } from '../services/microsoft-auth.service';
+import { getProjectRuntimeEnvVars } from '../services/project-runtime-env';
 import { TestAgentService, testAgentService } from '../services/test-agent.service';
 import { resolveProjectContextAccess } from '../services/user-group-context-access.service';
 import { customModelCostSchema, llmSelectedModelSchema } from '../types/llm';
@@ -63,6 +64,10 @@ export const testRoutes = async (app: App) => {
 			if (!projectId) {
 				return reply.status(400).send({ error: noProjectMessage() });
 			}
+			const userRole = await getUserRoleInProject(projectId, userId);
+			if (!userRole || userRole === 'viewer') {
+				return reply.status(403).send({ error: 'Viewers cannot run tests' });
+			}
 
 			try {
 				const modelSelection = model as LlmSelectedModel | undefined;
@@ -77,6 +82,7 @@ export const testRoutes = async (app: App) => {
 					);
 					const verified = await testAgentService.runVerification(
 						projectId,
+						userId,
 						prompt,
 						result,
 						expectedColumns,
@@ -108,7 +114,7 @@ async function buildVerificationToolContext(projectId: string, userId: string): 
 		throw new Error('Project path does not exist.');
 	}
 	const [envVars, azureAccessToken, contextAccess] = await Promise.all([
-		getEnvVars(projectId),
+		getProjectRuntimeEnvVars(projectId),
 		hasFeature(LICENSE_FEATURES.sso).then((has) => (has ? getAzureAccessTokenForUser(userId) : null)),
 		resolveProjectContextAccess(projectId, userId, projectFolder),
 	]);
@@ -126,6 +132,8 @@ async function buildVerificationToolContext(projectId: string, userId: string): 
 		warehouseRowSecurity: contextAccess.warehouseRowSecurity,
 		docsContextAccess: contextAccess.docsContextAccess,
 		filesContextAccess: contextAccess.filesContextAccess,
+		mcpAccess: contextAccess.mcpAccess,
+		skillsAccess: contextAccess.skillsAccess,
 		userGroupFeatures: contextAccess.userGroupFeatures,
 		userRulesGroupAccess: contextAccess.userRulesGroupAccess,
 		queryResults: new Map(),

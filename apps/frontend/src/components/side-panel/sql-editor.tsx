@@ -12,6 +12,7 @@ import type { editor } from 'monaco-editor';
 
 import { useOptionalAgentContext } from '@/contexts/agent.provider';
 import { useEditorTheme } from '@/hooks/use-editor-theme';
+import { useQueryRowsSource, useServerPaginatedRows } from '@/hooks/use-query-rows';
 import { FixInChatButton } from '@/components/fix-in-chat-button';
 import { SidePanelHeader } from '@/components/side-panel/side-panel-header';
 import { TableDisplay } from '@/components/tool-calls/display-table';
@@ -25,18 +26,20 @@ const RESULTS_MIN_HEIGHT = 240;
 const SQL_MIN_HEIGHT = 100;
 const SEPARATOR_HEIGHT = 12;
 const SQL_CONTENT_PADDING = 8;
+const RESULTS_PAGE_SIZE = 100;
 
 interface SqlEditorProps {
 	input: executeSql.Input;
 	output: executeSql.Output;
+	toolCallId?: string;
 	editable?: boolean;
 }
 
-export const SidePanelContent = ({ input, output, editable = false }: SqlEditorProps) => {
+export const SidePanelContent = ({ input, output, toolCallId, editable = false }: SqlEditorProps) => {
 	return (
 		<div className='flex h-full min-h-0 flex-col bg-background'>
 			<SidePanelHeader title={input.name ?? input.sql_query} label={output.id} />
-			<SqlQueryEditor input={input} output={output} editable={editable} />
+			<SqlQueryEditor input={input} output={output} toolCallId={toolCallId} editable={editable} />
 		</div>
 	);
 };
@@ -46,7 +49,7 @@ interface SqlQueryEditorProps extends SqlEditorProps {
 }
 
 /** SQL editor with run / save & run actions and the result table underneath. */
-export function SqlQueryEditor({ input, output, editable = false, onOutputChange }: SqlQueryEditorProps) {
+export function SqlQueryEditor({ input, output, toolCallId, editable = false, onOutputChange }: SqlQueryEditorProps) {
 	const queryClient = useQueryClient();
 	const monaco = useMonaco();
 	const editorTheme = useEditorTheme();
@@ -59,6 +62,12 @@ export function SqlQueryEditor({ input, output, editable = false, onOutputChange
 	const [savedSql, setSavedSql] = useState(input.sql_query);
 	const [previewOutput, setPreviewOutput] = useState<executeSql.Output>(output);
 	const [error, setError] = useState<string | null>(null);
+	const rowsSource = useQueryRowsSource(toolCallId, previewOutput);
+	const resultRows = useServerPaginatedRows(
+		rowsSource,
+		previewOutput.data as Record<string, unknown>[],
+		RESULTS_PAGE_SIZE,
+	);
 	const rootRef = useRef<HTMLDivElement>(null);
 	const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
 	const sqlPanelRef = usePanelRef();
@@ -167,6 +176,7 @@ export function SqlQueryEditor({ input, output, editable = false, onOutputChange
 					}
 				}
 
+				queryClient.removeQueries(trpc.chat.getQueryRows.pathFilter());
 				void queryClient.invalidateQueries(trpc.story.getQuerySql.pathFilter());
 				void queryClient.invalidateQueries(trpc.story.getFilteredQueryData.pathFilter());
 				void queryClient.invalidateQueries(trpc.storyShare.getQuerySql.pathFilter());
@@ -330,12 +340,13 @@ export function SqlQueryEditor({ input, output, editable = false, onOutputChange
 
 				<ResizablePanel id='results' defaultSize={RESULTS_MIN_HEIGHT} minSize={RESULTS_MIN_HEIGHT}>
 					<TableDisplay
-						data={previewOutput.data as Record<string, unknown>[]}
+						data={resultRows.rows}
+						serverPagination={resultRows.serverPagination}
 						columns={previewOutput.columns}
 						className='h-full'
 						tableContainerClassName='flex-1 rounded-none border-0'
-						emptyLabel='No rows returned'
-						maxRowsBeforePagination={100}
+						emptyLabel={resultRows.isLoadingRows ? 'Loading rows...' : 'No rows returned'}
+						maxRowsBeforePagination={RESULTS_PAGE_SIZE}
 					/>
 				</ResizablePanel>
 			</ResizablePanelGroup>

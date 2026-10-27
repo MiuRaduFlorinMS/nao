@@ -1,3 +1,5 @@
+export const SYSTEM_EXAMPLE_PROJECT_ID = 'system-example-project';
+
 export * from './assistant-tags';
 export * from './attachments';
 export * from './background-models';
@@ -23,6 +25,8 @@ export * from './sql-template';
 export * from './types';
 export * from './user-group-context';
 export * from './user-group-features';
+export * from './user-group-mcp';
 export * from './user-group-row-security';
+export * from './user-group-skills';
 export * from './user-group-sso-mapping';
 export * from './utils';

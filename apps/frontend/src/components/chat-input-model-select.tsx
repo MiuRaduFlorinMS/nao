@@ -1,13 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { Settings, TriangleAlert } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { providerLabel, providerName } from '@nao/shared/types';
+
 import type { LlmProvider, LlmSelectedModel } from '@nao/shared/types';
-import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from '@/components/ui/select';
+
 import { LlmProviderIcon } from '@/components/ui/llm-provider-icon';
+import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { usePermissions } from '@/hooks/use-permissions';
 import { isSameModel, useModelSelection } from '@/hooks/use-model-selection';
+import { usePermissions } from '@/hooks/use-permissions';
 import { getShortcutLabel } from '@/lib/keyboard-shortcuts';
 
 /** Listed as an option rather than a link, so that the keyboard reaches it like any other. */
@@ -15,8 +17,11 @@ const MANAGE_MODELS_VALUE = 'manage-models';
 /** Follows the default chat model set by the admin instead of pinning a model. */
 const NAO_DEFAULT_VALUE = 'nao-default';
 const NAO_DEFAULT_LABEL = 'Auto';
+const EXAMPLE_MODEL_VALUE = 'example-model';
+const PROJECT_SETUP_VALUE = 'project-setup';
+const EXAMPLE_MODEL_NAME = 'GPT 6 Sol';
 
-export function ChatInputModelSelect() {
+export function ChatInputModelSelect({ isExample = false }: { isExample?: boolean }) {
 	const navigate = useNavigate();
 	const { isAdmin } = usePermissions();
 	const {
@@ -27,6 +32,7 @@ export function ChatInputModelSelect() {
 		setSelectedModel,
 		isPending,
 		canCycleModels,
+		hasProject,
 	} = useModelSelection();
 	const { isTooltipOpen, onTooltipOpenChange, onSelectOpenChange } = useSelectTriggerTooltip();
 
@@ -68,11 +74,18 @@ export function ChatInputModelSelect() {
 	const selectedModelName = usesDefaultModel ? NAO_DEFAULT_LABEL : (resolvedModelName ?? 'Select model');
 	const selectValue = usesDefaultModel ? NAO_DEFAULT_VALUE : selectedModel ? modelValue(selectedModel) : undefined;
 
+	if (isExample) {
+		return <ExampleModel />;
+	}
+
 	if (isPending) {
 		return null;
 	}
 
 	if (!availableModels?.length) {
+		if (!hasProject) {
+			return <ExampleModel />;
+		}
 		return (
 			<Link
 				to='/settings/project/models'
@@ -84,21 +97,21 @@ export function ChatInputModelSelect() {
 		);
 	}
 
-	if (!canCycleModels) {
-		const singleModel = (
-			<>
-				{selectedModel && (
-					<LlmProviderIcon
-						provider={selectedModel.provider}
-						baseUrl={selectedAvailableModel?.baseUrl}
-						className='size-4'
-					/>
-				)}
-				<span>{resolvedModelName ?? 'Select model'}</span>
-				{selectedModel && <NamedProviderHint provider={selectedModel.provider} />}
-			</>
-		);
+	const singleModel = (
+		<>
+			{selectedModel && (
+				<LlmProviderIcon
+					provider={selectedModel.provider}
+					baseUrl={selectedAvailableModel?.baseUrl}
+					className='size-4'
+				/>
+			)}
+			<span>{selectedModelName}</span>
+			{selectedModel && <NamedProviderHint provider={selectedModel.provider} />}
+		</>
+	);
 
+	if (!canCycleModels) {
 		if (!isAdmin) {
 			return (
 				<div className='flex items-center gap-2 text-sm font-normal text-muted-foreground'>{singleModel}</div>
@@ -158,7 +171,7 @@ export function ChatInputModelSelect() {
 				</SelectItem>
 				<SelectSeparator />
 
-				{availableModels.map((model) => (
+				{availableModels?.map((model) => (
 					<SelectItem key={`${model.provider}-${model.modelId}`} value={modelValue(model)}>
 						<LlmProviderIcon
 							provider={model.provider}
@@ -179,6 +192,32 @@ export function ChatInputModelSelect() {
 						</SelectItem>
 					</>
 				)}
+			</SelectContent>
+		</Select>
+	);
+}
+
+function ExampleModel() {
+	return (
+		<Select value={EXAMPLE_MODEL_VALUE}>
+			<SelectTrigger variant='ghost' className='p-0 gap-1 text-sm' size='sm' aria-label='Model'>
+				<SelectValue>
+					<div className='flex items-center gap-2'>
+						<LlmProviderIcon provider='nao' className='size-4' />
+						<span className='leading-none'>{EXAMPLE_MODEL_NAME}</span>
+					</div>
+				</SelectValue>
+			</SelectTrigger>
+			<SelectContent align='center' position='popper' side='top' collisionPadding={12}>
+				<SelectItem value={EXAMPLE_MODEL_VALUE}>
+					<LlmProviderIcon provider='nao' className='size-4 opacity-100' />
+					{EXAMPLE_MODEL_NAME}
+				</SelectItem>
+				<SelectSeparator />
+				<SelectItem value={PROJECT_SETUP_VALUE} disabled className='text-muted-foreground'>
+					<Settings className='size-4' />
+					Set up a project to switch models
+				</SelectItem>
 			</SelectContent>
 		</Select>
 	);

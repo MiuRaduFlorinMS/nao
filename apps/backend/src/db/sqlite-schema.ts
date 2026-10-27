@@ -17,6 +17,7 @@ import {
 import type { DisplaySettings } from '@nao/shared/date';
 import { STORY_APP_KINDS, STORY_STATE_SCOPES } from '@nao/shared/story-app';
 import type { StoryThemePair } from '@nao/shared/story-theme';
+import type { StoryThemeGeneration } from '@nao/shared/story-theme-generation';
 import type {
 	AnalyticsEventMetadata,
 	CitationData,
@@ -32,6 +33,7 @@ import {
 	FOLDER_VISIBILITY,
 	MEMBER_BUDGET_PERIODS,
 	NOTIFICATION_CATEGORIES,
+	RECIPIENT_MODES,
 	SHARE_VISIBILITY,
 	STORY_ACTIONS,
 	STORY_FORMATS,
@@ -70,11 +72,25 @@ import {
 	RecommendationImpact,
 	RecommendationInsight,
 } from '../types/context-recommendation';
+import { EXAMPLE_CHAT_ALLOWANCE_SCOPES, type ExampleChatAllowanceScope } from '../types/example-chat-allowance';
 import { LLM_INFERENCE_TYPES, type ModelSettingsMap } from '../types/llm';
 import { LOG_LEVELS, LOG_SOURCES } from '../types/log';
+import {
+	CREDIT_GRANT_TYPES,
+	CREDIT_LEDGER_ENTRY_TYPES,
+	type CreditGrantType,
+	type CreditLedgerEntryType,
+	MANAGED_AI_USAGE_CATEGORIES,
+	MANAGED_AI_USAGE_COST_SOURCES,
+	MANAGED_AI_USAGE_STATUSES,
+	type ManagedAiUsageCategory,
+	type ManagedAiUsageCostSource,
+	type ManagedAiUsageStatus,
+} from '../types/managed-ai-usage';
 import { McpEndpointSettings } from '../types/mcp-endpoint';
 import { MEMORY_CATEGORIES } from '../types/memory';
 import {
+	DiscordSettings,
 	MattermostSettings,
 	SlackSettings,
 	TeamsSettings,
@@ -84,6 +100,12 @@ import {
 import { ORG_ROLES } from '../types/organization';
 import type { StoryQuerySources } from '../types/story-cache';
 import type { StoredUserPreferences } from '../types/usage';
+import {
+	WAREHOUSE_PROVISIONING_STATUSES,
+	type WarehouseProvider,
+	type WarehouseProvisioningBusinessContext,
+	type WarehouseProvisioningModelSelection,
+} from '../types/warehouse';
 
 export const user = sqliteTable('user', {
 	id: text('id').primaryKey(),
@@ -96,6 +118,7 @@ export const user = sqliteTable('user', {
 	messagingProviderCode: text('messaging_provider_code').unique(),
 	githubAccessToken: text('github_access_token'),
 	gitlabAccessToken: text('gitlab_access_token'),
+	deactivatedAt: integer('deactivated_at', { mode: 'timestamp_ms' }),
 	createdAt: integer('created_at', { mode: 'timestamp_ms' })
 		.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
 		.notNull(),
@@ -199,6 +222,7 @@ export const organization = sqliteTable('organization', {
 	googleClientSecret: text('google_client_secret'),
 	googleAuthDomains: text('google_auth_domains'), // comma-separated list
 	bypassBilling: integer('bypass_billing', { mode: 'boolean' }).default(false).notNull(),
+	license: text('license'),
 
 	createdAt: integer('created_at', { mode: 'timestamp_ms' })
 		.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
@@ -280,6 +304,7 @@ export const project = sqliteTable(
 		teamsSettings: text('teams_settings', { mode: 'json' }).$type<TeamsSettings>(),
 		telegramSettings: text('telegram_settings', { mode: 'json' }).$type<TelegramSettings>(),
 		mattermostSettings: text('mattermost_settings', { mode: 'json' }).$type<MattermostSettings>(),
+		discordSettings: text('discord_settings', { mode: 'json' }).$type<DiscordSettings>(),
 		whatsappSettings: text('whatsapp_settings', { mode: 'json' }).$type<WhatsappSettings>(),
 		mcpEndpointSettings: text('mcp_endpoint_settings', { mode: 'json' }).$type<McpEndpointSettings>(),
 		displaySettings: text('display_settings', { mode: 'json' }).$type<DisplaySettings>(),
@@ -325,6 +350,91 @@ export const projectWhatsappLink = sqliteTable(
 	],
 );
 
+export const projectDiscordLink = sqliteTable(
+	'project_discord_link',
+	{
+		projectId: text('project_id')
+			.notNull()
+			.references(() => project.id, { onDelete: 'cascade' }),
+		discordUserId: text('discord_user_id').notNull(),
+		userId: text('user_id')
+			.notNull()
+			.references(() => user.id, { onDelete: 'cascade' }),
+		createdAt: integer('created_at', { mode: 'timestamp_ms' })
+			.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+			.notNull(),
+		updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+			.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+			.$onUpdate(() => new Date())
+			.notNull(),
+	},
+	(t) => [
+		primaryKey({ columns: [t.projectId, t.discordUserId] }),
+		index('project_discord_link_userId_idx').on(t.userId),
+	],
+);
+
+export const projectWarehouseCredentials = sqliteTable('project_warehouse_credentials', {
+	projectId: text('project_id')
+		.notNull()
+		.primaryKey()
+		.references(() => project.id, { onDelete: 'cascade' }),
+	provider: text('provider').$type<WarehouseProvider>().notNull(),
+	encryptedCredentials: text('encrypted_credentials').notNull(),
+	createdAt: integer('created_at', { mode: 'timestamp_ms' })
+		.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+		.notNull(),
+	updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+		.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+		.$onUpdate(() => new Date())
+		.notNull(),
+});
+
+export const warehouseProvisioningJob = sqliteTable(
+	'warehouse_provisioning_job',
+	{
+		id: text('id')
+			.$defaultFn(() => crypto.randomUUID())
+			.primaryKey(),
+		userId: text('user_id')
+			.notNull()
+			.references(() => user.id, { onDelete: 'cascade' }),
+		orgId: text('org_id')
+			.notNull()
+			.references(() => organization.id, { onDelete: 'cascade' }),
+		onboardingChatId: text('onboarding_chat_id'),
+		projectId: text('project_id').references(() => project.id, { onDelete: 'set null' }),
+		projectName: text('project_name').notNull(),
+		provider: text('provider').$type<WarehouseProvider>().notNull(),
+		encryptedCredentials: text('encrypted_credentials'),
+		businessContext: text('business_context', { mode: 'json' }).$type<WarehouseProvisioningBusinessContext>(),
+		modelSelection: text('model_selection', { mode: 'json' }).$type<WarehouseProvisioningModelSelection>(),
+		modelProjectId: text('model_project_id'),
+		status: text('status', { enum: WAREHOUSE_PROVISIONING_STATUSES }).notNull().default('queued'),
+		logs: text('logs'),
+		error: text('error'),
+		temporaryDirectory: text('temporary_directory'),
+		lockedBy: text('locked_by'),
+		lockedAt: integer('locked_at', { mode: 'timestamp_ms' }),
+		attempts: integer('attempts').notNull().default(0),
+		createdAt: integer('created_at', { mode: 'timestamp_ms' })
+			.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+			.notNull(),
+		updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+			.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+			.$onUpdate(() => new Date())
+			.notNull(),
+		finishedAt: integer('finished_at', { mode: 'timestamp_ms' }),
+	},
+	(t) => [
+		index('warehouse_provisioning_job_userId_idx').on(t.userId),
+		index('warehouse_provisioning_job_status_idx').on(t.status),
+		uniqueIndex('warehouse_provisioning_job_active_user_idx')
+			.on(t.userId)
+			.where(sql`${t.status} NOT IN ('ready', 'failed', 'cancelled')`),
+	],
+);
+
 export const chat = sqliteTable(
 	'chat',
 	{
@@ -344,6 +454,7 @@ export const chat = sqliteTable(
 		teamsThreadId: text('teams_thread_id'),
 		telegramThreadId: text('telegram_thread_id'),
 		mattermostThreadId: text('mattermost_thread_id'),
+		discordThreadId: text('discord_thread_id'),
 		whatsappThreadId: text('whatsapp_thread_id'),
 		forkMetadata: text('fork_metadata', { mode: 'json' }).$type<ForkMetadata>(),
 		createdAt: integer('created_at', { mode: 'timestamp_ms' })
@@ -361,6 +472,7 @@ export const chat = sqliteTable(
 		index('chat_teams_thread_idx').on(table.teamsThreadId),
 		index('chat_telegram_thread_idx').on(table.telegramThreadId),
 		index('chat_mattermost_thread_idx').on(table.mattermostThreadId),
+		index('chat_discord_thread_idx').on(table.discordThreadId),
 		index('chat_whatsapp_thread_idx').on(table.whatsappThreadId),
 	],
 );
@@ -385,6 +497,7 @@ export const chatMessage = sqliteTable(
 		source: text('source', { enum: MESSAGE_SOURCES }),
 		isForked: integer('isForked', { mode: 'boolean' }),
 		citation: text('citation', { mode: 'json' }).$type<CitationData>(),
+		discordMessageId: text('discord_message_id'),
 		createdAt: integer('created_at', { mode: 'timestamp_ms' })
 			.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
 			.notNull(),
@@ -405,6 +518,7 @@ export const chatMessage = sqliteTable(
 		index('chat_message_createdAt_idx').on(table.createdAt),
 		index('chat_message_versionGroupId_idx').on(table.versionGroupId),
 		index('chat_message_senderUserId_idx').on(table.senderUserId),
+		index('chat_message_discordMessageId_idx').on(table.discordMessageId),
 	],
 );
 
@@ -1148,6 +1262,8 @@ export const storyBundle = sqliteTable('story_bundle', {
 	bundle: text('bundle'),
 	pageShell: text('page_shell'),
 	bundleError: text('bundle_error'),
+	thumbnail: text('thumbnail'),
+	thumbnailTheme: text('thumbnail_theme'),
 	builtAt: integer('built_at', { mode: 'timestamp_ms' })
 		.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
 		.notNull(),
@@ -1416,10 +1532,11 @@ export const storyDelivery = sqliteTable('story_delivery', {
 	cron: text('cron'),
 	scheduleDescription: text('schedule_description'),
 	channels: text('channels', { mode: 'json' }).$type<NotificationChannel[]>().notNull(),
-	recipientMode: text('recipient_mode', { enum: ['all', 'specific'] })
+	recipientMode: text('recipient_mode', { enum: [...RECIPIENT_MODES] })
 		.notNull()
 		.default('specific'),
 	recipientUserIds: text('recipient_user_ids', { mode: 'json' }).$type<string[]>().notNull(),
+	recipientGroupIds: text('recipient_group_ids', { mode: 'json' }).$type<string[]>().notNull().default([]),
 	scheduledJobId: text('scheduled_job_id').references(() => scheduledJob.id, { onDelete: 'set null' }),
 	createdBy: text('created_by').references(() => user.id, { onDelete: 'set null' }),
 	createdAt: integer('created_at', { mode: 'timestamp_ms' })
@@ -1495,6 +1612,174 @@ export const llmInference = sqliteTable(
 		index('llm_inference_userId_idx').on(t.userId),
 		index('llm_inference_type_idx').on(t.type),
 		index('llm_inference_createdAt_idx').on(t.createdAt),
+	],
+);
+
+export const exampleChatAllowance = sqliteTable(
+	'example_chat_allowance',
+	{
+		userId: text('user_id')
+			.notNull()
+			.references(() => user.id, { onDelete: 'cascade' }),
+		scope: text('scope', { enum: EXAMPLE_CHAT_ALLOWANCE_SCOPES }).$type<ExampleChatAllowanceScope>().notNull(),
+		usedRuns: integer('used_runs').notNull().default(0),
+		updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+			.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+			.$onUpdate(() => new Date())
+			.notNull(),
+	},
+	(t) => [primaryKey({ columns: [t.userId, t.scope] })],
+);
+
+export const creditWallet = sqliteTable(
+	'credit_wallet',
+	{
+		id: text('id')
+			.$defaultFn(() => crypto.randomUUID())
+			.primaryKey(),
+		orgId: text('org_id').references(() => organization.id, { onDelete: 'set null' }),
+		balanceMicroUsd: integer('balance_micro_usd').notNull().default(0),
+		ledgerSequence: integer('ledger_sequence').notNull().default(0),
+		createdAt: integer('created_at', { mode: 'timestamp_ms' })
+			.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+			.notNull(),
+		updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+			.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+			.$onUpdate(() => new Date())
+			.notNull(),
+	},
+	(t) => [uniqueIndex('credit_wallet_orgId_idx').on(t.orgId)],
+);
+
+export const creditGrantPolicy = sqliteTable('credit_grant_policy', {
+	grantType: text('grant_type', { enum: CREDIT_GRANT_TYPES }).$type<CreditGrantType>().primaryKey(),
+	amountMicroUsd: integer('amount_micro_usd').notNull(),
+	maxGrantsPerOrg: integer('max_grants_per_org'),
+	enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+	createdAt: integer('created_at', { mode: 'timestamp_ms' })
+		.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+		.notNull(),
+	updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+		.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+		.$onUpdate(() => new Date())
+		.notNull(),
+});
+
+export const creditGrantCandidate = sqliteTable(
+	'credit_grant_candidate',
+	{
+		id: text('id')
+			.$defaultFn(() => crypto.randomUUID())
+			.primaryKey(),
+		grantType: text('grant_type', { enum: CREDIT_GRANT_TYPES })
+			.$type<CreditGrantType>()
+			.notNull()
+			.references(() => creditGrantPolicy.grantType),
+		orgId: text('org_id').references(() => organization.id, { onDelete: 'set null' }),
+		userId: text('user_id').references(() => user.id, { onDelete: 'set null' }),
+		projectId: text('project_id').references(() => project.id, { onDelete: 'set null' }),
+		sourceKey: text('source_key').notNull().unique(),
+		activatedAt: integer('activated_at', { mode: 'timestamp_ms' }),
+		createdAt: integer('created_at', { mode: 'timestamp_ms' })
+			.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+			.notNull(),
+	},
+	(t) => [
+		index('credit_grant_candidate_orgId_grantType_idx').on(t.orgId, t.grantType),
+		index('credit_grant_candidate_userId_grantType_idx').on(t.userId, t.grantType),
+		index('credit_grant_candidate_projectId_grantType_idx').on(t.projectId, t.grantType),
+	],
+);
+
+export const managedAiUsage = sqliteTable(
+	'managed_ai_usage',
+	{
+		id: text('id')
+			.$defaultFn(() => crypto.randomUUID())
+			.primaryKey(),
+		operationId: text('operation_id').notNull().unique(),
+		runId: text('run_id').notNull(),
+		walletId: text('wallet_id').references(() => creditWallet.id, { onDelete: 'set null' }),
+		userId: text('user_id').references(() => user.id, { onDelete: 'set null' }),
+		orgId: text('org_id').references(() => organization.id, { onDelete: 'set null' }),
+		projectId: text('project_id').references(() => project.id, { onDelete: 'set null' }),
+		chatId: text('chat_id').references(() => chat.id, { onDelete: 'set null' }),
+		chatMessageId: text('chat_message_id'),
+		category: text('category', { enum: MANAGED_AI_USAGE_CATEGORIES }).$type<ManagedAiUsageCategory>().notNull(),
+		llmProvider: text('llm_provider').$type<LlmProvider>().notNull(),
+		llmModelId: text('llm_model_id').notNull(),
+		isManaged: integer('is_managed', { mode: 'boolean' }).notNull().default(false),
+		status: text('status', { enum: MANAGED_AI_USAGE_STATUSES }).$type<ManagedAiUsageStatus>().notNull(),
+		finishReason: text('finish_reason'),
+		providerRequestId: text('provider_request_id'),
+		inputTotalTokens: integer('input_total_tokens'),
+		inputNoCacheTokens: integer('input_no_cache_tokens').notNull().default(0),
+		inputCacheReadTokens: integer('input_cache_read_tokens').notNull().default(0),
+		inputCacheWriteTokens: integer('input_cache_write_tokens').notNull().default(0),
+		outputTotalTokens: integer('output_total_tokens').notNull().default(0),
+		outputTextTokens: integer('output_text_tokens'),
+		outputReasoningTokens: integer('output_reasoning_tokens').notNull().default(0),
+		totalTokens: integer('total_tokens'),
+		inputNoCacheRateMicroUsdPerMillionTokens: integer('input_no_cache_rate_micro_usd_per_million_tokens'),
+		inputCacheReadRateMicroUsdPerMillionTokens: integer('input_cache_read_rate_micro_usd_per_million_tokens'),
+		inputCacheWriteRateMicroUsdPerMillionTokens: integer('input_cache_write_rate_micro_usd_per_million_tokens'),
+		outputRateMicroUsdPerMillionTokens: integer('output_rate_micro_usd_per_million_tokens'),
+		inputNoCacheCostMicroUsd: integer('input_no_cache_cost_micro_usd'),
+		inputCacheReadCostMicroUsd: integer('input_cache_read_cost_micro_usd'),
+		inputCacheWriteCostMicroUsd: integer('input_cache_write_cost_micro_usd'),
+		outputCostMicroUsd: integer('output_cost_micro_usd'),
+		upstreamCostMicroUsd: integer('upstream_cost_micro_usd'),
+		customerChargeMicroUsd: integer('customer_charge_micro_usd').notNull().default(0),
+		costSource: text('cost_source', { enum: MANAGED_AI_USAGE_COST_SOURCES })
+			.$type<ManagedAiUsageCostSource>()
+			.notNull(),
+		startedAt: integer('started_at', { mode: 'timestamp_ms' })
+			.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+			.notNull(),
+		completedAt: integer('completed_at', { mode: 'timestamp_ms' })
+			.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+			.notNull(),
+	},
+	(t) => [
+		index('managed_ai_usage_orgId_startedAt_idx').on(t.orgId, t.startedAt, t.id),
+		index('managed_ai_usage_userId_startedAt_idx').on(t.userId, t.startedAt, t.id),
+		index('managed_ai_usage_userId_runId_idx').on(t.userId, t.runId),
+		index('managed_ai_usage_projectId_startedAt_idx').on(t.projectId, t.startedAt, t.id),
+		index('managed_ai_usage_chatId_idx').on(t.chatId),
+		index('managed_ai_usage_chatMessageId_idx').on(t.chatMessageId),
+		index('managed_ai_usage_status_idx').on(t.status),
+	],
+);
+
+export const creditLedger = sqliteTable(
+	'credit_ledger',
+	{
+		id: text('id')
+			.$defaultFn(() => crypto.randomUUID())
+			.primaryKey(),
+		walletId: text('wallet_id').references(() => creditWallet.id, { onDelete: 'set null' }),
+		usageId: text('usage_id')
+			.unique()
+			.references(() => managedAiUsage.id, { onDelete: 'set null' }),
+		entryType: text('entry_type', { enum: CREDIT_LEDGER_ENTRY_TYPES }).$type<CreditLedgerEntryType>().notNull(),
+		deltaMicroUsd: integer('delta_micro_usd').notNull(),
+		balanceAfterMicroUsd: integer('balance_after_micro_usd').notNull(),
+		transactionSequence: integer('transaction_sequence').notNull().default(0),
+		idempotencyKey: text('idempotency_key').notNull().unique(),
+		externalReference: text('external_reference'),
+		grantType: text('grant_type', { enum: CREDIT_GRANT_TYPES })
+			.$type<CreditGrantType>()
+			.references(() => creditGrantPolicy.grantType),
+		purchasePaymentIntentId: text('purchase_payment_intent_id'),
+		metadata: text('metadata', { mode: 'json' }).$type<Record<string, unknown>>(),
+		createdAt: integer('created_at', { mode: 'timestamp_ms' })
+			.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+			.notNull(),
+	},
+	(t) => [
+		index('credit_ledger_walletId_createdAt_idx').on(t.walletId, t.createdAt, t.id),
+		index('credit_ledger_walletId_grantType_idx').on(t.walletId, t.grantType),
+		index('credit_ledger_purchasePaymentIntentId_idx').on(t.purchasePaymentIntentId),
 	],
 );
 
@@ -1764,6 +2049,7 @@ export const projectStoryTheme = sqliteTable(
 			.references(() => project.id, { onDelete: 'cascade' }),
 		version: integer('version').notNull(),
 		theme: text('theme', { mode: 'json' }).$type<StoryThemePair>(),
+		generation: text('generation', { mode: 'json' }).$type<StoryThemeGeneration>(),
 		enabled: integer('enabled', { mode: 'boolean' }).default(false).notNull(),
 		createdAt: integer('created_at', { mode: 'timestamp_ms' })
 			.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
@@ -1873,6 +2159,28 @@ export const storyFolderItem = sqliteTable(
 	(t) => [index('story_folder_item_folderId_idx').on(t.folderId)],
 );
 
+export const storyFeedback = sqliteTable(
+	'story_feedback',
+	{
+		storyId: text('story_id')
+			.notNull()
+			.references(() => story.id, { onDelete: 'cascade' }),
+		userId: text('user_id')
+			.notNull()
+			.references(() => user.id, { onDelete: 'cascade' }),
+		vote: text('vote', { enum: ['up', 'down'] }).notNull(),
+		explanation: text('explanation'),
+		createdAt: integer('created_at', { mode: 'timestamp_ms' })
+			.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+			.notNull(),
+		updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+			.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+			.$onUpdate(() => new Date())
+			.notNull(),
+	},
+	(t) => [primaryKey({ columns: [t.storyId, t.userId] }), index('story_feedback_userId_idx').on(t.userId)],
+);
+
 export const analyticsEvent = sqliteTable(
 	'analytics_event',
 	{
@@ -1902,6 +2210,7 @@ export const analyticsEvent = sqliteTable(
 		index('analytics_event_sharedStoryId_idx').on(t.sharedStoryId),
 		index('analytics_event_actorUserId_idx').on(t.actorUserId),
 		index('analytics_event_type_createdAt_idx').on(t.type, t.createdAt),
+		index('analytics_event_project_type_asset_story_idx').on(t.projectId, t.type, t.assetType, t.storyId),
 		check(
 			'analytics_event_asset_id_required',
 			sql`CASE WHEN asset_type = 'chat' THEN chat_id IS NOT NULL WHEN asset_type = 'story' THEN story_id IS NOT NULL ELSE TRUE END`,

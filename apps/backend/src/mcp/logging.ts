@@ -4,12 +4,13 @@ import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/proto
 import type { ServerNotification, ServerRequest } from '@modelcontextprotocol/sdk/types.js';
 
 import { insertMcpCallLog } from '../queries/mcp-endpoint.queries';
-import type { McpEndpointSettings } from '../types/mcp-endpoint';
+import type { McpEndpointSettings, McpUserRole } from '../types/mcp-endpoint';
 import { truncateMiddle } from '../utils/utils';
 
 export interface McpContext {
 	userId: string;
 	projectId: string;
+	role: McpUserRole;
 	settings: McpEndpointSettings;
 	/** When true, chart tools return config + data rows for the client agent to render itself instead of embed links/apps only. */
 	chartDataMode: boolean;
@@ -34,6 +35,7 @@ export const TOOL_MODE_MAP: Record<string, (keyof McpEndpointSettings)[]> = {
 	ask_nao: ['subAgentModeEnabled'],
 	get_nao_answer: ['subAgentModeEnabled'],
 	execute_sql: ['contextLayerModeEnabled'],
+	execute_semantic_query: ['contextLayerModeEnabled'],
 	grep: ['contextLayerModeEnabled'],
 	ls: ['contextLayerModeEnabled'],
 	create_story: ['contextLayerModeEnabled'],
