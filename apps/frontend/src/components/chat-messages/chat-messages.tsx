@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useParams, useRouterState } from '@tanstack/react-router';
 import { TextShimmer } from '../ui/text-shimmer';
 import { ChatError } from './chat-error';
+import { TruncatedAnswerNotice } from './truncated-answer-notice';
 import { FollowUpSuggestions } from './follow-up-suggestions';
 import { AssistantMessage } from './assistant-message';
 import { UserMessage } from './user-message';
@@ -108,6 +109,7 @@ export const ChatMessagesContent = memo(function ChatMessagesContent() {
 			<div className='flex flex-col gap-4 pt-4 pb-6' data-selection-ignore>
 				{followUpSuggestionsToolCall && <FollowUpSuggestions toolPart={followUpSuggestionsToolCall} />}
 
+				<TruncatedAnswerNotice className='mt-4' />
 				<ChatError className='mt-4' />
 			</div>
 		</div>

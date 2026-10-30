@@ -27,6 +27,16 @@ export const convertToTokenUsage = (usage: LanguageModelUsage): TokenUsage => ({
 	totalTokens: usage.totalTokens,
 });
 
+export const sumTokenUsage = (usages: TokenUsage[]): TokenUsage => {
+	const keys = Object.keys(usages[0] ?? {}) as (keyof TokenUsage)[];
+	return Object.fromEntries(keys.map((key) => [key, sumDefined(usages.map((usage) => usage[key]))])) as TokenUsage;
+};
+
+const sumDefined = (values: (number | undefined)[]): number | undefined =>
+	values.some((value) => value !== undefined)
+		? values.reduce<number>((total, value) => total + (value ?? 0), 0)
+		: undefined;
+
 export const convertToCost = (
 	usage: TokenUsage,
 	provider: LlmProvider,

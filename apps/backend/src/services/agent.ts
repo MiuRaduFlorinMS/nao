@@ -18,6 +18,7 @@ import {
 	UIMessageStreamWriter,
 } from 'ai';
 
+import { streamWithLengthContinuations } from '../agents/length-continuation';
 import type { ManagedAiUsageContext } from '../agents/managed-ai';
 import { disableModelReasoning, fitThinkingBudget, getProviderMeta, ProviderModelResult } from '../agents/providers';
 import { interactiveStopConditions } from '../agents/stop-conditions';
@@ -60,6 +61,7 @@ import {
 	findLastUserMessage,
 	getLastUserMessageText,
 	settleToolParts,
+	sumTokenUsage,
 } from '../utils/ai';
 import { assertBudgetNotExceeded } from '../utils/budget';
 import { normalizeCitationMarkersStream } from '../utils/citation-markers-stream';
@@ -644,7 +646,7 @@ export class AgentManager {
 		} = {},
 	): ReadableStream<InferUIMessageChunk<UIMessage>> {
 		let error: unknown = undefined;
-		let result: StreamTextResult<AgentTools, never> | undefined;
+		const results: StreamTextResult<AgentTools, never>[] = [];
 		const assistantMessageId = crypto.randomUUID();
 		this._usageContext.messageId = assistantMessageId;
 		const handleError = (err: unknown): string => {
@@ -684,31 +686,30 @@ export class AgentManager {
 					opts.chatUrl,
 				);
 
-				result = await this._agent.stream({
+				await streamWithLengthContinuations({
 					messages,
-					abortSignal: this._abortController.signal,
-					experimental_transform: normalizeCitationMarkersStream(),
+					writer,
+					streamStep: (stepMessages) =>
+						this._agent.stream({
+							messages: stepMessages,
+							abortSignal: this._abortController.signal,
+							experimental_transform: normalizeCitationMarkersStream(),
+						}),
+					onResult: (result) => {
+						results.push(result);
+						if (results.length === 1) {
+							this._scheduleRequestSideTasks(uiMessages, opts.events?.newChat);
+						}
+					},
+					onError: handleError,
+					isAborted: () => this._abortController.signal.aborted,
 				});
-
-				// Extract memory immediately after the request to the agent is sent
-				this._scheduleMemoryExtraction(uiMessages);
-
-				if (opts.events?.newChat) {
-					this._scheduleTitleGeneration(getLastUserMessageText(uiMessages));
-				}
-
-				writer.merge(
-					result.toUIMessageStream({
-						sendStart: false,
-						onError: handleError,
-					}),
-				);
 			},
 			onError: handleError,
 			onFinish: async (e) => {
 				try {
 					const stopReason = e.isAborted ? 'interrupted' : e.finishReason;
-					const tokenUsage = await this._getTotalUsage(result);
+					const tokenUsage = await this._getTotalUsage(results);
 					const [settledMessage] = await settleToolParts([e.responseMessage]);
 					if (opts.tracking) {
 						this._trackMessageSent(opts.tracking, settledMessage, stopReason, error);
@@ -729,6 +730,14 @@ export class AgentManager {
 				}
 			},
 		});
+	}
+
+	/** Extracts memory and generates the chat title as soon as the request to the agent is sent. */
+	private _scheduleRequestSideTasks(uiMessages: UIMessage[], newChat: unknown): void {
+		this._scheduleMemoryExtraction(uiMessages);
+		if (newChat) {
+			this._scheduleTitleGeneration(getLastUserMessageText(uiMessages));
+		}
 	}
 
 	/**
@@ -955,15 +964,18 @@ export class AgentManager {
 	}
 
 	private async _getTotalUsage(
-		result: StreamTextResult<ReturnType<typeof getTools>, never> | undefined,
+		results: StreamTextResult<ReturnType<typeof getTools>, never>[],
 	): Promise<TokenUsage | undefined> {
-		if (!result) {
+		if (!results.length) {
 			return undefined;
 		}
 
 		try {
 			// totalUsage promise will throw if an error occured during the streaming
-			return convertToTokenUsage(await result.totalUsage);
+			const usages = await Promise.all(
+				results.map(async (result) => convertToTokenUsage(await result.totalUsage)),
+			);
+			return sumTokenUsage(usages);
 		} catch (error) {
 			void error;
 			return undefined;
