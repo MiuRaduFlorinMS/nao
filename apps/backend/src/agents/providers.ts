@@ -58,18 +58,22 @@ export {
 /** Assumed for models missing from the catalogue, such as custom models behind an OpenAI-compatible endpoint. */
 const DEFAULT_CONTEXT_WINDOW = 200_000;
 
+/** Bun's fetch aborts after 5 minutes without data, which cuts off long silent model calls on large contexts. */
+const fetchWithoutIdleTimeout = ((input, init) =>
+	fetch(input, { ...init, timeout: false } as RequestInit)) as typeof fetch;
+
 export const CACHE_1H = { type: 'ephemeral', ttl: '1h' } as const;
 export const CACHE_5M = { type: 'ephemeral' } as const;
 
 export const LLM_PROVIDERS: LlmProvidersType = {
 	nao: {
 		...PROVIDER_META.nao,
-		create: (settings, modelId) => createOpenAI(settings).responses(modelId),
+		create: (settings, modelId) => createOpenAI({ ...settings, fetch: fetchWithoutIdleTimeout }).responses(modelId),
 		defaultOptions: { store: false, truncation: 'auto', reasoningSummary: 'auto' },
 	},
 	anthropic: {
 		...PROVIDER_META.anthropic,
-		create: (settings, modelId) => withProgressUpdates(createAnthropic(settings).chat(modelId)),
+		create: (settings, modelId) => withProgressUpdates(createAnthropic({ ...settings, fetch: fetchWithoutIdleTimeout }).chat(modelId)),
 		defaultOptions: {
 			disableParallelToolUse: false,
 			contextManagement: {
@@ -100,20 +104,20 @@ export const LLM_PROVIDERS: LlmProvidersType = {
 	},
 	openai: {
 		...PROVIDER_META.openai,
-		create: (settings, modelId) => createOpenAI(settings).responses(modelId),
+		create: (settings, modelId) => createOpenAI({ ...settings, fetch: fetchWithoutIdleTimeout }).responses(modelId),
 		defaultOptions: { store: false, truncation: 'auto', reasoningSummary: 'auto' },
 	},
 	google: {
 		...PROVIDER_META.google,
-		create: (settings, modelId) => createGoogleGenerativeAI(settings).chat(modelId),
+		create: (settings, modelId) => createGoogleGenerativeAI({ ...settings, fetch: fetchWithoutIdleTimeout }).chat(modelId),
 	},
 	mistral: {
 		...PROVIDER_META.mistral,
-		create: (settings, modelId) => createMistral(settings).chat(modelId),
+		create: (settings, modelId) => createMistral({ ...settings, fetch: fetchWithoutIdleTimeout }).chat(modelId),
 	},
 	openrouter: {
 		...PROVIDER_META.openrouter,
-		create: (settings, modelId) => createOpenRouter(settings).chat(modelId),
+		create: (settings, modelId) => createOpenRouter({ ...settings, fetch: fetchWithoutIdleTimeout }).chat(modelId),
 	},
 	ollama: {
 		...PROVIDER_META.ollama,
@@ -153,7 +157,7 @@ export const LLM_PROVIDERS: LlmProvidersType = {
 				};
 			}
 
-			return createAmazonBedrock(config).languageModel(resolvedModelId);
+			return createAmazonBedrock({ ...config, fetch: fetchWithoutIdleTimeout }).languageModel(resolvedModelId);
 		},
 	},
 	vertex: {
@@ -164,7 +168,13 @@ export const LLM_PROVIDERS: LlmProvidersType = {
 			const location = creds?.location || process.env.GOOGLE_VERTEX_LOCATION || 'global';
 
 			const googleAuthOptions = buildVertexAuthOptions(creds);
-			const config = { project, location, baseURL: settings.baseURL, googleAuthOptions };
+			const config = {
+				project,
+				location,
+				baseURL: settings.baseURL,
+				googleAuthOptions,
+				fetch: fetchWithoutIdleTimeout,
+			};
 
 			if (modelId.startsWith('claude-')) {
 				return createVertexAnthropic(config)(modelId);
@@ -183,6 +193,7 @@ export const LLM_PROVIDERS: LlmProvidersType = {
 
 			return createAzure({
 				apiKey: settings.apiKey,
+				fetch: fetchWithoutIdleTimeout,
 				...(settings.baseURL ? { baseURL: settings.baseURL } : resourceName ? { resourceName } : {}),
 				...(apiVersion && { apiVersion }),
 				...(useDeploymentBasedUrls && { useDeploymentBasedUrls }),
@@ -236,6 +247,7 @@ function createCompatibleModel(provider: LlmProvider, settings: ProviderSettings
 		apiKey: settings.apiKey,
 		includeUsage: true,
 		supportsStructuredOutputs: true,
+		fetch: fetchWithoutIdleTimeout,
 	}).chatModel(modelId);
 }
 
