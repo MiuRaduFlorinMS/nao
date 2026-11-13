@@ -22,6 +22,7 @@ import { createOllama } from 'ai-sdk-ollama';
 
 import type {
 	ActiveEffort,
+	ExtraParamKey,
 	LlmProvidersType,
 	ModelCapabilities,
 	ModelInferenceSettings,
@@ -43,6 +44,7 @@ import {
 	OPENAI_COMPATIBLE_BASE_URLS,
 	PROVIDER_META,
 } from './provider-meta';
+import { TOOL_RESULT_CLEARING_EDIT } from './tool-result-clearing';
 import { withWellFormedPrompt } from './well-formed-prompt';
 
 export {
@@ -59,8 +61,10 @@ export {
 const DEFAULT_CONTEXT_WINDOW = 200_000;
 
 /** Bun's fetch aborts after 5 minutes without data, which cuts off long silent model calls on large contexts. */
-const fetchWithoutIdleTimeout = ((input, init) =>
-	fetch(input, { ...init, timeout: false } as RequestInit)) as typeof fetch;
+const fetchWithoutIdleTimeout = ((input, init) => {
+	const bunInit: RequestInit & { timeout: boolean } = { ...init, timeout: false };
+	return fetch(input, bunInit);
+}) as typeof fetch;
 
 export const CACHE_1H = { type: 'ephemeral', ttl: '1h' } as const;
 export const CACHE_5M = { type: 'ephemeral' } as const;
@@ -73,33 +77,11 @@ export const LLM_PROVIDERS: LlmProvidersType = {
 	},
 	anthropic: {
 		...PROVIDER_META.anthropic,
-		create: (settings, modelId) => withProgressUpdates(createAnthropic({ ...settings, fetch: fetchWithoutIdleTimeout }).chat(modelId)),
+		create: (settings, modelId) =>
+			withProgressUpdates(createAnthropic({ ...settings, fetch: fetchWithoutIdleTimeout }).chat(modelId)),
 		defaultOptions: {
 			disableParallelToolUse: false,
-			contextManagement: {
-				edits: [
-					{
-						type: 'clear_tool_uses_20250919',
-						trigger: {
-							type: 'input_tokens',
-							value: 180_000,
-						},
-						clearToolInputs: false,
-						excludeTools: [
-							'display_chart',
-							'execute_python',
-							'execute_semantic_query',
-							'execute_sql',
-							'execute_sandboxed_code',
-							'grep',
-							'list',
-							'read',
-							'search',
-							'story',
-						],
-					},
-				],
-			},
+			contextManagement: { edits: [TOOL_RESULT_CLEARING_EDIT] },
 		} satisfies AnthropicProviderOptions,
 	},
 	openai: {
@@ -109,7 +91,8 @@ export const LLM_PROVIDERS: LlmProvidersType = {
 	},
 	google: {
 		...PROVIDER_META.google,
-		create: (settings, modelId) => createGoogleGenerativeAI({ ...settings, fetch: fetchWithoutIdleTimeout }).chat(modelId),
+		create: (settings, modelId) =>
+			createGoogleGenerativeAI({ ...settings, fetch: fetchWithoutIdleTimeout }).chat(modelId),
 	},
 	mistral: {
 		...PROVIDER_META.mistral,
@@ -177,7 +160,7 @@ export const LLM_PROVIDERS: LlmProvidersType = {
 			};
 
 			if (modelId.startsWith('claude-')) {
-				return createVertexAnthropic(config)(modelId);
+				return createVertexAnthropic({ ...config, fetch: fetchWithUnforcedToolChoice })(modelId);
 			}
 			return createVertex(config)(modelId);
 		},
@@ -484,7 +467,7 @@ type ThinkingResult = { providerOverrides?: Record<string, unknown>; thinkingAct
 const THINKING_INACTIVE: ThinkingResult = { thinkingActive: false };
 
 /** Snap a stored effort to the nearest option the model declares, so a stale setting can't error. */
-function clampEffort(effort: ActiveEffort, options: ReasoningEffort[] | undefined): ActiveEffort {
+export function clampEffort(effort: ActiveEffort, options: ReasoningEffort[] | undefined): ActiveEffort {
 	if (!options || options.includes(effort)) {
 		return effort;
 	}
@@ -662,6 +645,11 @@ function resolveEffortThinking(
 	return { providerOverrides: toOverrides(effort), thinkingActive: true };
 }
 
+/** Sent when the admin leaves the param unset: Gemini bills its thinking but only returns it when asked. */
+const EXTRA_PARAM_DEFAULTS: Partial<Pick<ModelInferenceSettings, ExtraParamKey>> = {
+	includeThoughts: true,
+};
+
 function resolveExtraOptions(
 	provider: LlmProvider,
 	modelId: string,
@@ -675,7 +663,7 @@ function resolveExtraOptions(
 
 	const overrides: Record<string, unknown> = {};
 	for (const key of extraParams) {
-		const value = settings[key];
+		const value = settings[key] ?? EXTRA_PARAM_DEFAULTS[key];
 		if (value === undefined || key === 'thinkingDisplay') {
 			continue;
 		}
@@ -710,6 +698,18 @@ function mergeProviderOverrides(
 	}
 	return merged;
 }
+
+/**
+ * The newest Claude models reject a forced tool call, which the SDK sends for `toolChoice: 'required'` and, on
+ * Vertex, for every structured output. Every Claude model accepts the same request with `auto`.
+ */
+const fetchWithUnforcedToolChoice = ((input, init) => {
+	const body = JSON.parse(init?.body as string);
+	if (body.tool_choice?.type === 'any') {
+		body.tool_choice.type = 'auto';
+	}
+	return fetch(input, { ...init, body: JSON.stringify(body) });
+}) as typeof fetch;
 
 function getProviderModelConfig<P extends LlmProviderKind>(provider: P, modelId: string): ProviderConfigMap[P] {
 	const model = LLM_PROVIDERS[provider].models.find((m) => m.id === modelId);

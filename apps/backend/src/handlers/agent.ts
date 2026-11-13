@@ -1,11 +1,10 @@
 import { documentMediaType, type ImageUploadData } from '@nao/shared/attachments';
 
-import { renderAdminSystemPrompt } from '../components/ai';
-import { renderOnboardingSystemPrompt } from '../components/ai/onboarding-system-prompt';
-import { noProjectMessage } from '../env';
+import type { AgentProfile } from '../agents/profiles/types';
 import * as chatQueries from '../queries/chat.queries';
 import * as imageQueries from '../queries/image.queries';
-import { adminAgentTools, type AgentManager, agentService, onboardingAgentTools } from '../services/agent';
+import { type AgentManager, agentService } from '../services/agent';
+import { recordWebConversationStarted } from '../services/github-star-prompt.service';
 import { mcpService } from '../services/mcp';
 import { skillService } from '../services/skill';
 import type { StorageScope } from '../services/storage';
@@ -14,15 +13,15 @@ import { AgentRequest, AgentRequestUserMessage, MessageSource, UIMessagePart } f
 import { createChatTitle } from '../utils/ai';
 import { HandlerError } from '../utils/error';
 import { buildImageUrl } from '../utils/image';
+import { logger } from '../utils/logger';
 import { isStoragePath, toStorageRelativePath, toStorageVirtualPath } from '../utils/tools';
 
-interface HandleAgentMessageInput extends Omit<AgentRequest, 'mode'> {
-	isOnboarding: boolean;
+interface HandleAgentMessageInput extends Omit<AgentRequest, 'mode' | 'adminMode'> {
+	profile: AgentProfile;
 	userId: string;
-	projectId: string | undefined;
+	projectId: string;
 	billingAccessVerifiedProjectId?: string;
 	domainHost: string | undefined;
-	projectAccessAlreadyAuthorized?: boolean;
 	unbilledManagedAiUsage?: boolean;
 }
 
@@ -51,49 +50,32 @@ export const handleAgentRoute = async (opts: HandleAgentMessageInput): Promise<H
 		model,
 		mentions,
 		projectId,
-		adminMode,
+		profile,
 		billingAccessVerifiedProjectId,
-		isOnboarding,
 		unbilledManagedAiUsage,
 	} = opts;
 
-	if (!projectId) {
-		throw new HandlerError('BAD_REQUEST', noProjectMessage());
-	}
+	const resolvedModel = await agentService.assertRunAvailable(projectId, model, userId, unbilledManagedAiUsage);
 
-	await agentService.assertBudget(projectId, model, userId);
-
-	const source: MessageSource = isOnboarding ? 'onboarding' : adminMode ? 'admin' : 'web';
 	const { chat, chatId, isNewChat, newMessageId } = await persistUserMessage({
 		userId,
 		projectId,
 		message,
 		chatId: opts.chatId,
 		messageToEditId,
-		source,
+		source: profile.source,
 	});
+
+	if (isNewChat && profile.source === 'web') {
+		await recordWebConversationStarted(userId).catch((error) => logRecordingFailure(error, projectId));
+	}
 
 	await mcpService.initializeMcpState(projectId);
 	await skillService.initializeSkills(projectId);
 
-	const agentOptions = isOnboarding
-		? {
-				tools: onboardingAgentTools,
-				systemPrompt: renderOnboardingSystemPrompt(),
-			}
-		: adminMode
-			? {
-					tools: adminAgentTools,
-					systemPrompt: renderAdminSystemPrompt({ timezone: opts.timezone }),
-					adminMode: true,
-				}
-			: undefined;
-
-	const agent = await agentService.create({ ...chat, userId, projectId }, model, {
-		...agentOptions,
+	const agent = await agentService.create({ ...chat, userId, projectId }, resolvedModel, profile, {
 		billingAccessVerifiedProjectId,
 		isBudgetChecked: true,
-		projectAccessAlreadyAuthorized: opts.projectAccessAlreadyAuthorized,
 		unbilledManagedAiUsage,
 	});
 
@@ -105,7 +87,6 @@ export const handleAgentRoute = async (opts: HandleAgentMessageInput): Promise<H
 	const stream = agent.stream(chat.messages, {
 		mentions,
 		timezone: opts.timezone,
-		source: isOnboarding ? source : undefined,
 		events: {
 			newChat: shouldEmitNewChat
 				? {
@@ -119,7 +100,7 @@ export const handleAgentRoute = async (opts: HandleAgentMessageInput): Promise<H
 				: undefined,
 			newUserMessage: { newId: newMessageId },
 		},
-		tracking: { source, isNewChat, domainHost: opts.domainHost },
+		tracking: { isNewChat, domainHost: opts.domainHost },
 	});
 
 	return {
@@ -231,7 +212,7 @@ const createChat = async (
 	const title = createChatTitle(message);
 	return await chatQueries.createChat(
 		{ title, userId, projectId },
-		{ text: message.text, citation: message.citation, source },
+		{ text: message.text, citations: message.citations, source },
 		attachmentParts,
 	);
 };
@@ -267,7 +248,15 @@ const insertOrSupersedeMessage = async (opts: {
 		chatId,
 		senderUserId: userId,
 		source,
-		citation: message.citation,
+		citations: message.citations,
 		versionGroupId,
 	});
 };
+
+function logRecordingFailure(error: unknown, projectId: string) {
+	const message = error instanceof Error ? error.message : String(error);
+	logger.error(`Failed to record a web conversation for the GitHub star prompt: ${message}`, {
+		source: 'system',
+		projectId,
+	});
+}

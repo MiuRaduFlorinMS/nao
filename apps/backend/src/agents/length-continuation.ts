@@ -1,4 +1,12 @@
-import type { FinishReason, ModelMessage, StreamTextResult, ToolSet, UIMessage, UIMessageStreamWriter } from 'ai';
+import type {
+	FinishReason,
+	ModelMessage,
+	OutputInterface,
+	StreamTextResult,
+	ToolSet,
+	UIMessage,
+	UIMessageStreamWriter,
+} from 'ai';
 
 /** Extra model calls allowed after the answer hits the output token limit, so one turn can write up to three times the cap. */
 export const MAX_LENGTH_CONTINUATIONS = 2;
@@ -7,22 +15,24 @@ export const LENGTH_CONTINUATION_PROMPT =
 	'Your previous response was cut off because it reached the output token limit. ' +
 	'Continue exactly where you stopped, without repeating anything you already wrote.';
 
-interface LengthContinuationOptions<TOOLS extends ToolSet, MESSAGE extends UIMessage> {
+interface LengthContinuationOptions<TOOLS extends ToolSet, OUTPUT extends OutputInterface, MESSAGE extends UIMessage> {
 	messages: ModelMessage[];
 	writer: UIMessageStreamWriter<MESSAGE>;
-	streamStep: (messages: ModelMessage[]) => Promise<StreamTextResult<TOOLS, never>>;
+	streamStep: (messages: ModelMessage[]) => Promise<StreamTextResult<TOOLS, OUTPUT>>;
 	onError: (error: unknown) => string;
 	isAborted: () => boolean;
-	onResult?: (result: StreamTextResult<TOOLS, never>) => void;
+	onResult?: (result: StreamTextResult<TOOLS, OUTPUT>) => void;
 }
 
 /**
  * Streams the agent answer into the current UI message and, when it stops on the output token limit,
  * asks the model to continue with a hidden prompt so the user sees one uninterrupted answer.
  */
-export async function streamWithLengthContinuations<TOOLS extends ToolSet, MESSAGE extends UIMessage>(
-	options: LengthContinuationOptions<TOOLS, MESSAGE>,
-): Promise<FinishReason | undefined> {
+export async function streamWithLengthContinuations<
+	TOOLS extends ToolSet,
+	OUTPUT extends OutputInterface,
+	MESSAGE extends UIMessage,
+>(options: LengthContinuationOptions<TOOLS, OUTPUT, MESSAGE>): Promise<FinishReason | undefined> {
 	let messages = options.messages;
 	let finishReason: FinishReason | undefined;
 
@@ -42,9 +52,9 @@ export async function streamWithLengthContinuations<TOOLS extends ToolSet, MESSA
 	return finishReason;
 }
 
-async function writeUIStream<TOOLS extends ToolSet, MESSAGE extends UIMessage>(
+async function writeUIStream<TOOLS extends ToolSet, OUTPUT extends OutputInterface, MESSAGE extends UIMessage>(
 	writer: UIMessageStreamWriter<MESSAGE>,
-	result: StreamTextResult<TOOLS, never>,
+	result: StreamTextResult<TOOLS, OUTPUT>,
 	onError: (error: unknown) => string,
 ): Promise<void> {
 	const stream = result.toUIMessageStream<MESSAGE>({ sendStart: false, sendFinish: false, onError });
@@ -53,8 +63,8 @@ async function writeUIStream<TOOLS extends ToolSet, MESSAGE extends UIMessage>(
 	}
 }
 
-async function getFinishReason<TOOLS extends ToolSet>(
-	result: StreamTextResult<TOOLS, never>,
+async function getFinishReason<TOOLS extends ToolSet, OUTPUT extends OutputInterface>(
+	result: StreamTextResult<TOOLS, OUTPUT>,
 ): Promise<FinishReason | undefined> {
 	try {
 		return await result.finishReason;
