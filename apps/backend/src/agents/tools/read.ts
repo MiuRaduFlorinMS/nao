@@ -13,8 +13,11 @@ import { toReadableText } from '../../services/file-text';
 import { assertProjectContextPathAllowed } from '../../services/project-context-path-access.service';
 import { toProjectPathError } from '../../services/project-path-error.service';
 import { readUserFile } from '../../services/storage/user-files';
+import { readStoryLibraryFile } from '../../services/story-library';
 import { readStoryMountFile } from '../../services/story-mount';
+import { findTableAnnotations } from '../../services/table-annotations.service';
 import type { ToolContext } from '../../types/tools';
+import { isStoryLibraryPath } from '../../utils/story-library';
 import { isStoriesPath } from '../../utils/story-mount';
 import { isStoragePath, resolveCanonicalProjectPath, toStorageRelativePath, toStorageScope } from '../../utils/tools';
 import { createTool } from '../../utils/tools';
@@ -25,11 +28,15 @@ export default createTool<readFile.Input, readFile.Output>({
 	outputSchema: readFile.OutputSchema,
 	execute: async ({ file_path }, context) => {
 		const content = await readAnywhere(file_path, context);
+		const annotations = await findTableAnnotations(file_path, (siblingPath) =>
+			readProjectFile(siblingPath, context),
+		);
 
 		return {
 			_version: '1' as const,
 			content,
 			numberOfTotalLines: content.split('\n').length,
+			...(annotations && { annotations }),
 		};
 	},
 
@@ -38,7 +45,10 @@ export default createTool<readFile.Input, readFile.Output>({
 
 const readAnywhere = (filePath: string, context: ToolContext): Promise<string> => {
 	if (isStoriesPath(filePath)) {
-		return readStoryMountFile(context.chatId, filePath);
+		return readStoryMountFile(context, filePath);
+	}
+	if (isStoryLibraryPath(filePath)) {
+		return readStoryLibraryFile(context, filePath);
 	}
 	if (isStoragePath(filePath)) {
 		return readUserFile(toStorageScope(context), toStorageRelativePath(filePath));

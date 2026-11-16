@@ -1,9 +1,11 @@
 import type { ChartType } from './chart-types';
 import type { ColumnConditionalFormats } from './conditional-formatting';
 import type { KeydownSnapshot, Shortcut } from './keyboard-shortcut';
+import type { StoryModel, StoryModelRequest, StoryModelResult } from './story-models';
+import type { StoryQueryFilters, StoryQueryInputs } from './story-query-inputs';
 import type { StoryTheme } from './story-theme';
 import type { displayChart } from './tools';
-import type { StoryBlockReference } from './types';
+import type { StoryBlockReference, StoryCitationIntent } from './types';
 
 /** Bare specifiers a story may import. Everything else is rejected at build time. */
 export const STORY_APP_ALLOWED_IMPORTS = [
@@ -39,7 +41,11 @@ export const STORY_DOCUMENT_SLOTS = { head: '<!--nao:head-->', body: '<!--nao:bo
 export const STORY_HTML_API_GLOBAL = 'nao';
 
 export interface StoryHtmlApi {
-	query(queryId: string, options?: { fresh?: boolean }): Promise<StoryQueryResult>;
+	query(queryId: string, options?: StoryQueryRequestOptions): Promise<StoryQueryResult>;
+	sql(sql: string, options?: StorySqlRequestOptions): Promise<StoryQueryResult>;
+	/** The models the viewer can call, e.g. the project's LLMs. */
+	models(): Promise<StoryModel[]>;
+	model(request: StoryModelRequest, options?: { fresh?: boolean }): Promise<StoryModelResult>;
 	querySql(queryId: string): Promise<string>;
 	narratives(): Promise<StoryNarratives>;
 	theme(): StoryTheme | null;
@@ -48,6 +54,26 @@ export interface StoryHtmlApi {
 	isPrint(): boolean;
 	state: StoryHtmlStateApi;
 	sharedState: StoryHtmlStateApi;
+}
+
+export interface StoryQueryRequestOptions extends StoryQueryInputs {
+	fresh?: boolean;
+}
+
+export interface StorySqlRequestOptions {
+	databaseId?: string;
+	filters?: StoryQueryFilters;
+	fresh?: boolean;
+}
+
+/**
+ * SQL a story runs itself, as its viewer: read-only and limited to what nao lets that viewer query.
+ * Its `{% filter %}` blocks render with `filters`, quoted on the server like those of saved queries.
+ */
+export interface StorySqlRequest {
+	sql: string;
+	databaseId?: string;
+	filters?: StoryQueryFilters;
 }
 
 export interface StoryHtmlStateApi {
@@ -99,8 +125,11 @@ export type StoryNarratives = Record<string, string>;
 
 export interface StoryExportData {
 	queries: Record<string, StoryQueryResult>;
+	/** Rows of the filtered queries and story SQL the viewer saw, by request key, so a download shows the same. */
+	requests?: Record<string, StoryQueryResult>;
 	narratives: StoryNarratives;
 	state?: StoryStateSnapshot;
+	chartPlugins?: Record<string, string>;
 }
 
 /** `user` rows are each viewer's own state; `project` rows are the state every viewer reads and writes together. */
@@ -208,7 +237,10 @@ export const isStoryKitEditableBlock = (value: string): value is StoryKitEditabl
 /** Frame → host. */
 export type StoryFrameMessage =
 	| { type: 'nao-story:ready' }
-	| { type: 'nao-story:query'; requestId: string; queryId: string; fresh?: boolean }
+	| { type: 'nao-story:query'; requestId: string; queryId: string; fresh?: boolean; inputs?: StoryQueryInputs }
+	| ({ type: 'nao-story:sql'; requestId: string; fresh?: boolean } & StorySqlRequest)
+	| { type: 'nao-story:models'; requestId: string }
+	| { type: 'nao-story:model'; requestId: string; request: StoryModelRequest; fresh?: boolean }
 	| { type: 'nao-story:narratives'; requestId: string }
 	| { type: 'nao-story:error'; message: string; stack?: string }
 	| { type: 'nao-story:copy-table'; columns: string[]; rows: Record<string, unknown>[] }
@@ -222,9 +254,20 @@ export type StoryFrameMessage =
 	| ({ type: 'nao-story:edit-block' } & StoryBlockEditPayload)
 	| ({ type: 'nao-story:edit-table-format' } & StoryTableFormatEditRequest)
 	| { type: 'nao-story:query-sql'; requestId: string; queryId: string }
+	| { type: 'nao-story:chart-plugin'; requestId: string; chartType: string }
 	| ({ type: 'nao-story:set-state' } & StoryStateChange)
 	| { type: 'nao-story:ask-block'; block: StoryBlockReference }
+	| ({ type: 'nao-story:ask' } & StoryElementAsk)
 	| ({ type: 'nao-story:keydown' } & KeydownSnapshot);
+
+export interface StoryElementAsk {
+	block: StoryBlockReference;
+	text: string;
+}
+
+export interface StoryElementCitation extends StoryElementAsk {
+	intent: StoryCitationIntent;
+}
 
 /** Plain keys the host hands to the story while it holds focus; everything else needs the story focused. */
 export const STORY_FORWARDED_KEYS: readonly string[] = ['ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown'];
@@ -235,8 +278,16 @@ export type StoryHostMessage =
 	| { type: 'nao-story:query-error'; requestId: string; message: string }
 	| { type: 'nao-story:query-sql-result'; requestId: string; sqlQuery: string }
 	| { type: 'nao-story:query-sql-error'; requestId: string; message: string }
+	| { type: 'nao-story:models-result'; requestId: string; models: StoryModel[] }
+	| { type: 'nao-story:models-error'; requestId: string; message: string }
+	| { type: 'nao-story:model-result'; requestId: string; result: StoryModelResult }
+	| { type: 'nao-story:model-error'; requestId: string; message: string }
+	| { type: 'nao-story:chart-plugin-result'; requestId: string; source: string }
+	| { type: 'nao-story:chart-plugin-error'; requestId: string; message: string }
 	| { type: 'nao-story:narratives-result'; requestId: string; narratives: StoryNarratives }
 	| { type: 'nao-story:editing'; enabled: boolean }
+	| { type: 'nao-story:inspector'; enabled: boolean; selectsElements: boolean }
+	| ({ type: 'nao-story:highlight' } & StoryElementAsk)
 	| { type: 'nao-story:theme'; theme: StoryTheme }
 	| { type: 'nao-story:shortcuts'; shortcuts: Shortcut[] }
 	| ({ type: 'nao-story:keydown' } & KeydownSnapshot);
@@ -265,6 +316,9 @@ export const isStoryFrameMessage = (value: unknown): value is StoryFrameMessage 
 		[
 			'nao-story:ready',
 			'nao-story:query',
+			'nao-story:sql',
+			'nao-story:models',
+			'nao-story:model',
 			'nao-story:narratives',
 			'nao-story:error',
 			'nao-story:copy-table',
@@ -272,8 +326,10 @@ export const isStoryFrameMessage = (value: unknown): value is StoryFrameMessage 
 			'nao-story:edit-block',
 			'nao-story:edit-table-format',
 			'nao-story:query-sql',
+			'nao-story:chart-plugin',
 			'nao-story:set-state',
 			'nao-story:ask-block',
+			'nao-story:ask',
 			'nao-story:keydown',
 		].includes(value.type)
 	);
@@ -287,8 +343,16 @@ export const isStoryHostMessage = (value: unknown): value is StoryHostMessage =>
 			'nao-story:query-error',
 			'nao-story:query-sql-result',
 			'nao-story:query-sql-error',
+			'nao-story:models-result',
+			'nao-story:models-error',
+			'nao-story:model-result',
+			'nao-story:model-error',
+			'nao-story:chart-plugin-result',
+			'nao-story:chart-plugin-error',
 			'nao-story:narratives-result',
 			'nao-story:editing',
+			'nao-story:inspector',
+			'nao-story:highlight',
 			'nao-story:theme',
 			'nao-story:shortcuts',
 			'nao-story:keydown',

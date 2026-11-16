@@ -20,6 +20,7 @@ export interface SettingsSearchEntry {
 	cloudOnly?: boolean;
 	cloudBillingOnly?: boolean;
 	betaSubagentsOnly?: boolean;
+	betaAutomationsOnly?: boolean;
 }
 
 export const settingsSearchIndex: SettingsSearchEntry[] = [
@@ -263,8 +264,8 @@ export const settingsSearchIndex: SettingsSearchEntry[] = [
 		page: '/settings/project',
 		pageLabel: 'Project Settings',
 		title: 'Information',
-		description: 'View your project name and filesystem path.',
-		keywords: ['project name', 'project path'],
+		description: 'View or rename your project and see its filesystem path.',
+		keywords: ['project name', 'rename project', 'project path'],
 	},
 	{
 		page: '/settings/project',
@@ -272,6 +273,14 @@ export const settingsSearchIndex: SettingsSearchEntry[] = [
 		title: 'Environment Variables',
 		description: 'Set environment variables referenced in nao_config.yaml.',
 		keywords: ['env', 'environment', 'variable', 'secret', 'credential', 'config', 'jinja'],
+		adminOnly: true,
+	},
+	{
+		page: '/settings/project',
+		pageLabel: 'Project Settings',
+		title: 'Warehouse credentials',
+		description: 'Replace the warehouse connection details stored encrypted in nao.',
+		keywords: ['warehouse', 'credentials', 'password', 'token', 'secret', 'connection', 'database'],
 		adminOnly: true,
 	},
 
@@ -554,18 +563,9 @@ export const settingsSearchIndex: SettingsSearchEntry[] = [
 		pageLabel: 'Agent',
 		section: 'Experimental',
 		search: { tab: 'tools' },
-		title: 'Python sandboxing',
-		description: 'Allow the agent to execute Python code in a secure sandboxed environment.',
-		keywords: ['code execution', 'sandbox', 'python'],
-	},
-	{
-		page: '/settings/project/agent',
-		pageLabel: 'Agent',
-		section: 'Experimental',
-		search: { tab: 'tools' },
-		title: 'Python execution duration',
-		description: 'Configure how long Python code can run before it is stopped.',
-		keywords: ['code execution', 'timeout', 'duration', 'python', 'seconds'],
+		title: 'Code mode',
+		description: 'Let the agent write JavaScript that combines several MCP tool calls in a single step.',
+		keywords: ['codemode', 'code execution', 'javascript', 'script', 'mcp', 'sandbox', 'python'],
 	},
 	{
 		page: '/settings/project/agent',
@@ -898,6 +898,15 @@ export const settingsSearchIndex: SettingsSearchEntry[] = [
 		page: '/settings/project/integrations/slack',
 		pageLabel: 'Integrations & MCP',
 		section: 'Slack',
+		title: 'Start a new thread for each direct message',
+		description: 'Make every direct message to nao start its own chat, answered in a Slack thread.',
+		keywords: ['slack dm', 'direct message', 'private message', 'dm threads', 'new chat per message'],
+		adminOnly: true,
+	},
+	{
+		page: '/settings/project/integrations/slack',
+		pageLabel: 'Integrations & MCP',
+		section: 'Slack',
 		title: 'Slack transport mode',
 		description: 'Switch between Webhook and Socket Mode for Slack delivery.',
 		keywords: [
@@ -1026,7 +1035,19 @@ export const settingsSearchIndex: SettingsSearchEntry[] = [
 		search: { tab: 'users' },
 		title: 'Users',
 		description: 'View the members of the project, the groups they belong to, and their roles.',
-		keywords: ['members', 'team', 'invite', 'add member', 'project members', 'roles', 'memberships', 'permissions'],
+		keywords: [
+			'members',
+			'team',
+			'invite',
+			'add member',
+			'project members',
+			'roles',
+			'memberships',
+			'permissions',
+			'bulk assign',
+			'add to group',
+			'filter users',
+		],
 	},
 	{
 		page: '/settings/project/user-groups',
@@ -1076,6 +1097,16 @@ export const settingsSearchIndex: SettingsSearchEntry[] = [
 		pageLabel: 'Users & Groups',
 		section: 'Manage Groups',
 		search: { tab: 'groups' },
+		title: 'Groups members can share with',
+		description: 'Choose which groups members of a group can share chats and stories with.',
+		keywords: ['share', 'sharing', 'share targets', 'exclusive', 'other groups', 'restrict sharing', 'groups'],
+		adminOnly: true,
+	},
+	{
+		page: '/settings/project/user-groups',
+		pageLabel: 'Users & Groups',
+		section: 'Manage Groups',
+		search: { tab: 'groups' },
 		title: 'Skills',
 		description:
 			'Choose which project skills a group can use, and which ones load in full at the start of every chat.',
@@ -1104,6 +1135,42 @@ export const settingsSearchIndex: SettingsSearchEntry[] = [
 		description: 'Mark sensitive tables and choose the constraint columns group row policies may use.',
 		keywords: ['security', 'rows', 'rls', 'predicates', 'where', 'constraint columns', 'sensitive tables'],
 		adminOnly: true,
+	},
+
+	// ── Project > Automations ────────────────────────────────
+	{
+		page: '/settings/project/automations',
+		pageLabel: 'Automations',
+		title: 'All automations',
+		description: 'Review, disable, reassign, and delete the automations created by every member of this project.',
+		keywords: [
+			'automations',
+			'schedules',
+			'cron',
+			'webhook',
+			'disable',
+			'pause',
+			'transfer',
+			'owner',
+			'orphaned',
+			'delete',
+			'remove',
+		],
+		adminOnly: true,
+		betaAutomationsOnly: true,
+	},
+
+	// ── Monitoring ─────────────────────────────────────────────
+	{
+		page: '/settings/monitoring/automations',
+		pageLabel: 'Monitoring',
+		section: 'Automations',
+		title: 'Automation runs',
+		description:
+			'Runs, failures, success rate and durations of every automation in the project, and what started them.',
+		keywords: ['monitoring', 'observability', 'automation runs', 'failures', 'errors', 'triggers', 'dashboard'],
+		adminOnly: true,
+		betaAutomationsOnly: true,
 	},
 
 	// ── Usage & Costs ──────────────────────────────────────────
@@ -1405,7 +1472,7 @@ export const settingsSearchIndex: SettingsSearchEntry[] = [
 		section: 'Stories',
 		title: 'Start from a brand',
 		description:
-			'Read colours, fonts and shapes from a website, an image or a ZIP of brand assets — or several together.',
+			'Read colours, fonts and shapes from a website, an image, a PDF, brand guidelines in Markdown or text, or a ZIP of brand assets — or several together.',
 		keywords: [
 			'inspiration',
 			'generate',
@@ -1414,7 +1481,14 @@ export const settingsSearchIndex: SettingsSearchEntry[] = [
 			'url',
 			'screenshot',
 			'image',
+			'pdf',
 			'zip',
+			'markdown',
+			'md',
+			'text',
+			'txt',
+			'document',
+			'guidelines',
 			'paste',
 			'drop',
 			'upload',
@@ -1512,8 +1586,20 @@ export const settingsSearchIndex: SettingsSearchEntry[] = [
 		search: { tab: 'stories' },
 		section: 'Stories',
 		title: 'Blocks',
-		description: 'Background, border and radius shared by KPI tiles and charts.',
-		keywords: ['block', 'card', 'kpi', 'border', 'radius', 'button', 'pill', 'highlight', 'tinted', 'filters'],
+		description: 'Background, border and radius shared by KPI tiles, charts and filters; tabs share the border.',
+		keywords: [
+			'block',
+			'card',
+			'kpi',
+			'border',
+			'radius',
+			'button',
+			'pill',
+			'highlight',
+			'tinted',
+			'filters',
+			'tabs',
+		],
 		adminOnly: true,
 	},
 	{
@@ -1544,6 +1630,54 @@ export const settingsSearchIndex: SettingsSearchEntry[] = [
 		title: 'File Explorer',
 		description: 'Browse and inspect the files and context available to the agent.',
 		keywords: ['files', 'context', 'documents', 'knowledge base'],
+		adminOrContextAdmin: true,
+	},
+
+	{
+		page: '/settings/context-explorer',
+		pageLabel: 'File Explorer',
+		search: { tests: 'open' },
+		title: 'Tests',
+		description: 'Run the context tests from the Tests drawer of the File Explorer and review their results.',
+		keywords: ['tests', 'evaluation', 'eval', 'nao test', 'run tests', 'pass rate', 'reliability'],
+		adminOrContextAdmin: true,
+	},
+	{
+		page: '/settings/context-explorer',
+		pageLabel: 'File Explorer',
+		search: { tests: 'open' },
+		title: 'Compare models',
+		description: 'Run the tests on several models and compare their accuracy, cost, tool calls and time.',
+		keywords: [
+			'models',
+			'benchmark',
+			'compare models',
+			'llm',
+			'cost',
+			'cost per question',
+			'tool calls',
+			'leaderboard',
+		],
+		adminOrContextAdmin: true,
+	},
+	{
+		page: '/settings/context-explorer',
+		pageLabel: 'File Explorer',
+		search: { tests: 'open' },
+		title: 'Compare your changes with the default branch',
+		description: 'Run the tests on your File Explorer changes and on the default branch side by side.',
+		keywords: [
+			'compare',
+			'comparison',
+			'draft',
+			'changes',
+			'regression',
+			'before after',
+			'production',
+			'main',
+			'default branch',
+			'branch',
+		],
 		adminOrContextAdmin: true,
 	},
 ];

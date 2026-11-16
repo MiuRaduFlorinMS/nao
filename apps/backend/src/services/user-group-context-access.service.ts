@@ -35,7 +35,6 @@ export async function resolveProjectContextAccess(
 	projectId: string,
 	userId: string,
 	projectFolder: string,
-	options: { projectAccessAlreadyAuthorized?: boolean } = {},
 ): Promise<{
 	warehouseTableAccess: WarehouseTableAccess;
 	warehouseRowSecurity: WarehouseRowSecurity;
@@ -47,7 +46,7 @@ export async function resolveProjectContextAccess(
 	userRulesGroupAccess: UserRulesGroupAccess;
 	preloadedSkillNames: string[];
 }> {
-	if (!options.projectAccessAlreadyAuthorized && !(await getUserRoleInProject(projectId, userId))) {
+	if (!(await getUserRoleInProject(projectId, userId))) {
 		throw new HandlerError('FORBIDDEN', 'You do not have access to this project.');
 	}
 
@@ -80,6 +79,11 @@ export async function resolveMcpSettingsAccess(
 	if (role === 'admin') {
 		return ALL_MCP_ACCESS;
 	}
+	return (await resolveAvailableUserGroupAccess(projectId, userId)).mcpAccess;
+}
+
+/** MCP servers the user's agents may call: groups narrow every role, admins included, like agent runs do. */
+export async function resolveMcpUsageAccess(projectId: string, userId: string): Promise<McpAccess> {
 	return (await resolveAvailableUserGroupAccess(projectId, userId)).mcpAccess;
 }
 
